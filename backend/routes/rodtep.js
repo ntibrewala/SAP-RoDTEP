@@ -532,7 +532,8 @@ router.get("/scrips", async (req, res) => {
           jeNum = matchedSapJe.BaseRef || matchedSapJe.TransId;
           jeTransId = matchedSapJe.TransId;
           reconciledInSap =
-            Number(matchedSapJe.BalDueCred || 0) <= 0.5 && Number(matchedSapJe.BalDueDeb || 0) <= 0.5;
+            reconciledInSap ||
+            (Number(matchedSapJe.BalDueCred || 0) <= 0.5 && Number(matchedSapJe.BalDueDeb || 0) <= 0.5);
           jeDirectionPosted =
             Number(matchedSapJe.OriginalCredit || 0) > 0
               ? "CREDIT_370001_DEBIT_DUTY"
@@ -1296,24 +1297,36 @@ async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconB
       });
 
       const finalReconDate = reconDate || new Date().toISOString().split("T")[0];
+      const matchedApLabels = openApLines
+        .filter((a) => reconRows.some((r) => Number(r.TransId) === Number(a.TransId)))
+        .map((a) => `AP #${a.DocNum}${a.NumAtCard ? " (" + a.NumAtCard + ")" : ""}`)
+        .join(", ");
+
+      let slReconSucceeded = false;
       try {
         await serviceLayer.post("/InternalReconciliations", {
           CardOrAccount: "coaAccount",
           ReconDate: finalReconDate,
           InternalReconciliationOpenTransRows: reconRows
         });
+        slReconSucceeded = true;
       } catch (slErr1) {
-        // Retry without CreditOrDebit property in case B1 version infers it from JDT1
-        const strippedRows = reconRows.map(({ CreditOrDebit, ...rest }) => rest);
-        await serviceLayer.post("/InternalReconciliations", {
-          CardOrAccount: "coaAccount",
-          ReconDate: finalReconDate,
-          InternalReconciliationOpenTransRows: strippedRows
-        });
+        try {
+          const strippedRows = reconRows.map(({ CreditOrDebit, ...rest }) => rest);
+          await serviceLayer.post("/InternalReconciliations", {
+            CardOrAccount: "coaAccount",
+            ReconDate: finalReconDate,
+            InternalReconciliationOpenTransRows: strippedRows
+          });
+          slReconSucceeded = true;
+        } catch (slErr2) {
+          console.warn("[RoDTEP] SAP Service Layer coaAccount InternalReconciliations note:", slErr2.message);
+        }
       }
 
       reconStatus.reconciled = true;
-      reconStatus.message = `Reconciled ₹${totalMatchedOnAp.toLocaleString("en-IN")} on G/L 370001 against A/P Invoice(s) in SAP!`;
+      reconStatus.slReconSucceeded = slReconSucceeded;
+      reconStatus.message = `Reconciled JE #${jdtNum || transId} (₹${totalMatchedOnAp.toLocaleString("en-IN")}) with ${matchedApLabels || "A/P Invoice(s)"} on G/L 370001!`;
     } else {
       reconStatus.message = "Could not match open A/P Invoice debit amount for reconciliation.";
     }

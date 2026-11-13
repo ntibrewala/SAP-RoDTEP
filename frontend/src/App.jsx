@@ -521,7 +521,12 @@ export default function App() {
     const rows = [];
 
     const findMatchedSapBoeJe = ({ matchingUtils, gBl, gBoe, gNum, totalAttached, draftBoe }) => {
-      const utilWithJe = (matchingUtils || []).find((u) => u.JENum || u.JETransId);
+      const utilWithJe = (matchingUtils || []).find(
+        (u) => u.JENum || u.JETransId || String(u.Remarks || "").includes("[JE#")
+      );
+      const isMarkedReconInUtils = (matchingUtils || []).some(
+        (u) => !!u.ReconciledInSAP || String(u.Remarks || "").includes(":RECONCILED")
+      );
       const targetAmt = Number(totalAttached || draftBoe || 0);
       const cleanBl = String(gBl || "").trim().toUpperCase();
       const cleanBoe = String(gBoe || "").trim().toUpperCase();
@@ -562,7 +567,7 @@ export default function App() {
           JENum: matchedCreditRow.BaseRef || matchedCreditRow.TransId,
           JETransId: matchedCreditRow.TransId,
           JEDate: matchedCreditRow.RefDate || utilWithJe?.JEDate || null,
-          ReconciledInSAP: isRecon || !!utilWithJe?.ReconciledInSAP
+          ReconciledInSAP: isRecon || isMarkedReconInUtils
         };
       }
 
@@ -571,7 +576,7 @@ export default function App() {
           JENum: utilWithJe.JENum || utilWithJe.JETransId,
           JETransId: utilWithJe.JETransId || utilWithJe.JENum,
           JEDate: utilWithJe.JEDate || null,
-          ReconciledInSAP: !!utilWithJe.ReconciledInSAP
+          ReconciledInSAP: isMarkedReconInUtils
         };
       }
 
@@ -2480,6 +2485,27 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {banner && (
+                <div
+                  className={`p-3 rounded-[6px] border text-[12.5px] font-semibold flex items-center justify-between gap-3 ${
+                    banner.type === "error"
+                      ? "bg-red-50 border-red-300 text-red-900"
+                      : banner.type === "info"
+                      ? "bg-amber-50 border-amber-300 text-amber-900"
+                      : "bg-emerald-50 border-emerald-400 text-emerald-900"
+                  }`}
+                >
+                  <span>{banner.text}</span>
+                  <button
+                    type="button"
+                    onClick={() => setBanner(null)}
+                    className="text-[11px] font-bold uppercase underline cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
 
               <div className="overflow-x-auto max-h-[500px] border border-black/10 rounded-[6px]">
                 <table className="w-full text-left border-collapse text-[12px]">
