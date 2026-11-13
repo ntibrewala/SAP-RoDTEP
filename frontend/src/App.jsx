@@ -1131,19 +1131,34 @@ export default function App() {
         )
       );
 
+      const isFormOpenForThisRow = activeJeGrpoKey === r.rowKey;
+      const finalBoeNo = isFormOpenForThisRow ? jeFormBoeNo : (r.BOENo || "");
+      const finalDate = isFormOpenForThisRow && jeFormDate ? jeFormDate : new Date().toISOString().split("T")[0];
+      const finalAmt = isFormOpenForThisRow && Number(jeFormAmount) > 0
+        ? Number(jeFormAmount)
+        : Number(r.totalAttached || r.DraftBOEAmount || 0);
+      const finalDutyCode = isFormOpenForThisRow && jeFormDutyCode ? jeFormDutyCode : "V00040";
+      const finalDutyType = isFormOpenForThisRow && jeFormDutyType ? jeFormDutyType : "BP";
+      const finalDirection = isFormOpenForThisRow && jeFormDirection ? jeFormDirection : "CREDIT_370001_DEBIT_DUTY";
+      const finalMemo = isFormOpenForThisRow && jeFormMemo
+        ? jeFormMemo
+        : (finalBoeNo
+            ? `BCD of BOE No ${finalBoeNo}`
+            : `BCD of BL ${r.BLNo || ""}${r.GRPODocNum ? " GRPO #" + r.GRPODocNum : ""}`);
+
       const apReconBreakdown = getGrpoApBreakdown(r);
       const res = await apiRequest("POST", "/post-grpo-je", {
         grpoDocEntry: r.GRPODocEntry,
         grpoDocNum: r.GRPODocNum,
         blNo: r.BLNo,
-        boeNo: jeFormBoeNo,
-        jeDate: jeFormDate,
-        amount: Number(jeFormAmount),
-        customDutyCode: jeFormDutyCode,
-        customDutyAccountType: jeFormDutyType,
-        jeDirection: jeFormDirection,
-        memo: jeFormMemo,
-        reconcileWithAp: jeFormReconcileAp,
+        boeNo: finalBoeNo,
+        jeDate: finalDate,
+        amount: finalAmt,
+        customDutyCode: finalDutyCode,
+        customDutyAccountType: finalDutyType,
+        jeDirection: finalDirection,
+        memo: finalMemo,
+        reconcileWithAp: true,
         reconcileApDocEntries: linkedApDocEntries,
         apReconBreakdown
       });
@@ -2714,10 +2729,12 @@ export default function App() {
                                         <>
                                           <button
                                             type="button"
-                                            onClick={() => handleOpenJeForm(r)}
+                                            disabled={submittingJe}
+                                            onClick={() => handlePostGrpoJe(r)}
                                             className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                            title="Directly post SAP Custom Duty Journal Entry (Debit V00040 / Credit 370001) and reconcile with linked A/P Invoice(s) via SAP Service Layer"
                                           >
-                                            {activeJeGrpoKey === r.rowKey ? "Close JE ▲" : "Post JE and Reconcile"}
+                                            {submittingJe ? "Posting JE & Reconciling..." : "Post JE and Reconcile"}
                                           </button>
                                           <button
                                             type="button"
