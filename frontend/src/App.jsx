@@ -2370,7 +2370,7 @@ export default function App() {
                       }
 
                       return filteredRows.map((r, idx) => {
-                        const isExpanded = expandedGrpoDocs[r.rowKey] !== undefined ? expandedGrpoDocs[r.rowKey] : r.isAttached;
+                        const isExpanded = !!expandedGrpoDocs[r.rowKey];
                         return (
                           <React.Fragment key={r.rowKey}>
                             <tr className={`hover:bg-[#faf9f7] ${isExpanded ? "bg-blue-50/40" : ""}`}>
@@ -2434,20 +2434,17 @@ export default function App() {
                                           ? `Hide Scrips (${r.attachedScrips.length}) ▲`
                                           : `View Scrips (${r.attachedScrips.length}) ▼`}
                                       </button>
-                                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[10px] font-bold uppercase">
-                                        ✓ Attached
-                                      </span>
                                       {r.JENum ? (
-                                        <span className="px-2 py-0.5 bg-purple-100 text-purple-900 border border-purple-300 rounded text-[10px] font-bold uppercase">
-                                          ✓ JE #{r.JENum} {r.ReconciledInSAP ? "(Reconciled)" : ""}
+                                        <span className="px-2 py-1 bg-purple-100 text-purple-900 border border-purple-300 rounded text-[10px] font-bold uppercase whitespace-nowrap">
+                                          ✓ JE #{r.JENum}
                                         </span>
                                       ) : (
                                         <button
                                           type="button"
                                           onClick={() => handleOpenJeForm(r)}
-                                          className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                          className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
                                         >
-                                          {activeJeGrpoKey === r.rowKey ? "Close JE Form ▲" : "Post Custom Duty JE & Reconcile"}
+                                          {activeJeGrpoKey === r.rowKey ? "Close JE ▲" : "Post JE & Reconcile"}
                                         </button>
                                       )}
                                     </>
@@ -2682,28 +2679,10 @@ export default function App() {
                             {isExpanded && r.attachedScrips.length > 0 && (
                               <tr className="bg-[#f8fafc]">
                                 <td colSpan={9} className="p-3 border-l-4 border-l-blue-600">
-                                  <div className="text-[11px] font-bold uppercase tracking-wider text-blue-900 mb-2 flex flex-wrap items-center justify-between gap-2">
-                                    <span>
-                                      Attached RoDTEP / RoSCTL Scrips for{" "}
-                                      {r.GRPODocNum ? `GRPO #${r.GRPODocNum}` : ""} (BL: {r.BLNo || "—"}) —{" "}
-                                      {r.attachedScrips.length} Scrips Totaling ₹{formatINR(r.totalAttached)}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        downloadChaExcel({
-                                          blNo: r.BLNo,
-                                          grpoDocNum: r.GRPODocNum,
-                                          boeNo: r.BOENo,
-                                          draftBoeAmount: r.DraftBOEAmount || r.totalAttached,
-                                          attachedScrips: r.attachedScrips,
-                                          allScrips: scrips
-                                        })
-                                      }
-                                      className="px-3 py-1 bg-[#c8102e] hover:bg-[#a00c24] text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer"
-                                    >
-                                      ⬇ Download CHA Excel (BL {r.BLNo})
-                                    </button>
+                                  <div className="text-[11px] font-bold uppercase tracking-wider text-blue-900 mb-2">
+                                    Attached RoDTEP / RoSCTL Scrips for{" "}
+                                    {r.GRPODocNum ? `GRPO #${r.GRPODocNum}` : ""} (BL: {r.BLNo || "—"}) —{" "}
+                                    {r.attachedScrips.length} Scrips Totaling ₹{formatINR(r.totalAttached)}
                                   </div>
                                   <div className="overflow-x-auto border border-blue-200 rounded bg-white">
                                     <table className="w-full text-left border-collapse text-[11.5px]">
