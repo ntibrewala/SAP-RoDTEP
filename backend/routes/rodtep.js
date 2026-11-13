@@ -27,53 +27,45 @@ function getPrimaryStorePath() {
 }
 
 function readLocalStore() {
-  const scripsByLic = new Map();
-  const utilsByKey = new Map();
+  const primary = getPrimaryStorePath();
+  if (fs.existsSync(primary)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(primary, "utf8"));
+      if ((parsed.scrips && parsed.scrips.length > 0) || (parsed.utilizations && parsed.utilizations.length > 0)) {
+        return {
+          scrips: parsed.scrips || [],
+          utilizations: parsed.utilizations || []
+        };
+      }
+    } catch (_) {}
+  }
 
   for (const p of CANDIDATE_STORE_PATHS) {
     try {
       if (fs.existsSync(p)) {
         const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
-        for (const s of parsed.scrips || []) {
-          if (!s || !s.LicNo) continue;
-          const prev = scripsByLic.get(s.LicNo) || {};
-          scripsByLic.set(s.LicNo, {
-            ...prev,
-            ...s,
-            APDocEntry: s.APDocEntry || prev.APDocEntry || null,
-            APDocNum: s.APDocNum || prev.APDocNum || null,
-            CardCode: s.CardCode || prev.CardCode || "",
-            CardName: s.CardName || prev.CardName || "",
-            NumAtCard: s.NumAtCard || prev.NumAtCard || "",
-            APDocDate: s.APDocDate || prev.APDocDate || ""
-          });
-        }
-        for (const u of parsed.utilizations || []) {
-          if (!u || !u.LicNo) continue;
-          const uKey = `${u.BLNo || ""}_${u.GRPODocEntry || ""}_${u.LicNo}_${u.AmountUsed}`;
-          const prevU = utilsByKey.get(uKey) || {};
-          utilsByKey.set(uKey, { ...prevU, ...u });
+        if ((parsed.scrips && parsed.scrips.length > 0) || (parsed.utilizations && parsed.utilizations.length > 0)) {
+          return {
+            scrips: parsed.scrips || [],
+            utilizations: parsed.utilizations || []
+          };
         }
       }
     } catch (_) {}
   }
 
-  return {
-    scrips: Array.from(scripsByLic.values()),
-    utilizations: Array.from(utilsByKey.values())
-  };
+  return { scrips: [], utilizations: [] };
 }
 
 function writeLocalStore(data) {
   const jsonStr = JSON.stringify(data, null, 2);
   const primary = getPrimaryStorePath();
-  const targets = new Set([primary, path.join(__dirname, "..", "rodtep_local_store.json")]);
-  for (const t of targets) {
+  for (const t of CANDIDATE_STORE_PATHS) {
     try {
-      fs.writeFileSync(t, jsonStr, "utf8");
-    } catch (e) {
-      console.warn("[RoDTEP] Failed to write local store to " + t + ":", e.message);
-    }
+      if (t === primary || fs.existsSync(t)) {
+        fs.writeFileSync(t, jsonStr, "utf8");
+      }
+    } catch (_) {}
   }
 }
 
@@ -897,6 +889,112 @@ router.delete("/utilization/:id", async (req, res) => {
   }
 });
 
+
+
+// --- 7B. POST /api/rodtep/detach-grpo: Detach all scrips for a specific GRPO or BL, or update BLNo on a GRPO ---
+router.post("/detach-grpo", async (req, res) => {
+  try {
+    const { grpoDocEntry = null, grpoDocNum = null, blNo = "", ids = [] } = req.body;
+    const canUseHana = await ensureHanaTables();
+
+    const idSet = new Set((ids || []).map((x) => Number(x)).filter(Boolean));
+
+    if (canUseHana) {
+      try {
+        if (idSet.size > 0) {
+          for (const id of idSet) {
+            await db.execute(`DELETE FROM "BHV_RODTEP_BL" WHERE "Id" = ?`, [id]);
+          }
+        } else if (grpoDocEntry) {
+          await db.execute(`DELETE FROM "BHV_RODTEP_BL" WHERE "GRPODocEntry" = ?`, [Number(grpoDocEntry)]);
+        } else if (grpoDocNum) {
+          await db.execute(`DELETE FROM "BHV_RODTEP_BL" WHERE "GRPODocNum" = ?`, [Number(grpoDocNum)]);
+        } else if (blNo) {
+          await db.execute(
+            `DELETE FROM "BHV_RODTEP_BL" WHERE "BLNo" = ? AND "GRPODocEntry" IS NULL`,
+            [String(blNo).trim()]
+          );
+        }
+      } catch (_) {}
+    }
+
+    const local = readLocalStore();
+    local.utilizations = (local.utilizations || []).filter((u) => {
+      if (idSet.size > 0) {
+        return !idSet.has(Number(u.Id));
+      }
+      if (grpoDocEntry && Number(u.GRPODocEntry) === Number(grpoDocEntry)) {
+        return false;
+      }
+      if (grpoDocNum && Number(u.GRPODocNum) === Number(grpoDocNum)) {
+        return false;
+      }
+      if (!grpoDocEntry && !grpoDocNum && blNo && !u.GRPODocEntry && !u.GRPODocNum) {
+        return String(u.BLNo || "").trim().toUpperCase() !== String(blNo).trim().toUpperCase();
+      }
+      return true;
+    });
+    writeLocalStore(local);
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- 7C. PATCH /api/rodtep/update-grpo-bl: Allow correcting BLNo or BOENo on an attached GRPO ---
+router.patch("/update-grpo-bl", async (req, res) => {
+  try {
+    const { grpoDocEntry = null, grpoDocNum = null, oldBlNo = "", newBlNo = "", boeNo = undefined } = req.body;
+    const cleanNewBl = String(newBlNo || "").trim();
+    if (!cleanNewBl) {
+      return res.status(400).json({ error: "New BL Number cannot be empty." });
+    }
+
+    const canUseHana = await ensureHanaTables();
+    if (canUseHana) {
+      try {
+        if (grpoDocEntry) {
+          await db.execute(
+            `UPDATE "BHV_RODTEP_BL" SET "BLNo" = ? WHERE "GRPODocEntry" = ?`,
+            [cleanNewBl, Number(grpoDocEntry)]
+          );
+        } else if (grpoDocNum) {
+          await db.execute(
+            `UPDATE "BHV_RODTEP_BL" SET "BLNo" = ? WHERE "GRPODocNum" = ?`,
+            [cleanNewBl, Number(grpoDocNum)]
+          );
+        } else if (oldBlNo) {
+          await db.execute(
+            `UPDATE "BHV_RODTEP_BL" SET "BLNo" = ? WHERE "BLNo" = ? AND "GRPODocEntry" IS NULL`,
+            [cleanNewBl, String(oldBlNo).trim()]
+          );
+        }
+      } catch (_) {}
+    }
+
+    const local = readLocalStore();
+    local.utilizations = (local.utilizations || []).map((u) => {
+      const matchGrpo =
+        (grpoDocEntry && Number(u.GRPODocEntry) === Number(grpoDocEntry)) ||
+        (grpoDocNum && Number(u.GRPODocNum) === Number(grpoDocNum)) ||
+        (!grpoDocEntry && !grpoDocNum && oldBlNo && String(u.BLNo || "").trim() === String(oldBlNo).trim());
+      if (matchGrpo) {
+        return {
+          ...u,
+          BLNo: cleanNewBl,
+          BOENo: boeNo !== undefined ? String(boeNo).trim() : u.BOENo
+        };
+      }
+      return u;
+    });
+    writeLocalStore(local);
+
+    res.json({ success: true, blNo: cleanNewBl });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // --- 8. PATCH /api/rodtep/scrip-ap-link: Link or Change SAP A/P Invoice on an Existing Scrip Later ---
 router.patch("/scrip-ap-link", async (req, res) => {

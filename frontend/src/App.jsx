@@ -526,8 +526,14 @@ export default function App() {
       const gBl = String(g.BLNo || "").trim().toUpperCase();
 
       const matchingUtils = (utilizations || []).filter((u) => {
-        if (gEntry && Number(u.GRPODocEntry) === gEntry) return true;
-        if (gNum && Number(u.GRPODocNum) === gNum) return true;
+        if (usedUtilIds.has(u.Id)) return false;
+        const uEntry = Number(u.GRPODocEntry || 0);
+        const uNum = Number(u.GRPODocNum || 0);
+        if (uEntry || uNum) {
+          if (gEntry && uEntry === gEntry) return true;
+          if (gNum && uNum === gNum) return true;
+          return false;
+        }
         if (gBl && String(u.BLNo || "").trim().toUpperCase() === gBl) return true;
         return false;
       });
@@ -551,7 +557,7 @@ export default function App() {
         CardCode: g.CardCode,
         CardName: g.CardName,
         VendorRefNo: g.VendorRefNo,
-        BLNo: g.BLNo || (matchingUtils[0] ? matchingUtils[0].BLNo : ""),
+        BLNo: (matchingUtils[0] && matchingUtils[0].BLNo) ? matchingUtils[0].BLNo : (g.BLNo || ""),
         BOENo: g.BOENo || (matchingUtils[0] ? matchingUtils[0].BOENo : ""),
         DraftBOEAmount: draftBoe,
         totalAttached,
@@ -737,7 +743,7 @@ export default function App() {
     const g = grpos.find((x) => String(x.GRPODocEntry) === String(grpoDocEntryStr));
     if (g) {
       setSelectedGrpoDocNum(String(g.GRPODocNum || ""));
-      if (g.BLNo) setBlNo(g.BLNo);
+      setBlNo(g.BLNo || "");
       if (g.DetectedPort) {
         setSelectedPort(g.DetectedPort);
         // Clear any checked scrips that don't match the new port
@@ -1071,6 +1077,30 @@ export default function App() {
       });
     } finally {
       setSubmittingJe(false);
+    }
+  };
+
+  const handleDetachAllForGrpo = async (r) => {
+    try {
+      const ids = (r.attachedScrips || []).map((u) => u.Id).filter(Boolean);
+      await apiRequest("POST", "/detach-grpo", {
+        grpoDocEntry: r.GRPODocEntry || null,
+        grpoDocNum: r.GRPODocNum || null,
+        blNo: r.BLNo || "",
+        ids
+      });
+      await fetchAllData();
+      setBanner({
+        type: "info",
+        text: `Detached all ${ids.length} scrip(s) from ${
+          r.GRPODocNum ? "GRPO #" + r.GRPODocNum : "BL " + r.BLNo
+        }. On-the-fly scrip balances have been restored!`
+      });
+    } catch (err) {
+      setBanner({
+        type: "error",
+        text: err.response?.data?.error || err.message || "Failed to detach scrips."
+      });
     }
   };
 
@@ -2447,6 +2477,14 @@ export default function App() {
                                           {activeJeGrpoKey === r.rowKey ? "Close JE ▲" : "Post JE & Reconcile"}
                                         </button>
                                       )}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDetachAllForGrpo(r)}
+                                        className="px-2 py-1 bg-gray-200 hover:bg-red-600 text-[#333] hover:text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                        title="Detach all scrips from this GRPO/BL and restore their balance"
+                                      >
+                                        ✕ Detach All
+                                      </button>
                                     </>
                                   ) : (
                                     <button
