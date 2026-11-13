@@ -507,26 +507,23 @@ router.get("/scrips", async (req, res) => {
           if (tagMatch[2]) reconciledInSap = true;
         }
 
-        const uBl = String(u.BLNo || "").trim().toUpperCase();
-        const uBoe = String(u.BOENo || "").trim().toUpperCase();
         const uGrpo = u.GRPODocNum ? String(u.GRPODocNum).trim() : "";
-        const gKey = u.GRPODocEntry ? `G_${u.GRPODocEntry}` : `B_${uBl}`;
+        const gKey = u.GRPODocEntry ? `G_${u.GRPODocEntry}` : `GNUM_${uGrpo}`;
         const groupAmt = groupTotalsByGrpoOrBl[gKey] || Number(u.DraftBOEAmount || 0);
 
+        // Link strictly by GRPO (never by BLNo)
         const matchedSapJe = manualJes.find((j) => {
           if (jeTransId && Number(j.TransId) === Number(jeTransId)) return true;
           if (jeNum && (String(j.BaseRef) === String(jeNum) || String(j.TransId) === String(jeNum))) return true;
           const allText = `${j.Ref1 || ""} ${j.Ref2 || ""} ${j.LineMemo || ""} ${j.HeaderRef1 || ""} ${j.HeaderRef2 || ""} ${j.HeaderMemo || ""}`.toUpperCase();
-          if (uBl && allText.includes(uBl)) return true;
-          if (uBoe && uBoe !== "DRAFT" && allText.includes(uBoe)) return true;
           if (uGrpo && (
+            String(j.Ref1 || "").trim() === "GRPO#" + uGrpo ||
+            String(j.HeaderRef1 || "").trim() === "GRPO#" + uGrpo ||
             String(j.Ref2 || "").trim() === uGrpo ||
             String(j.HeaderRef2 || "").trim() === uGrpo ||
             allText.includes("GRPO#" + uGrpo) ||
             allText.includes("GRPO #" + uGrpo)
           )) return true;
-          const jeLineAmt = Math.max(Number(j.OriginalCredit || 0), Number(j.OriginalDebit || 0));
-          if (groupAmt > 100 && Math.abs(jeLineAmt - groupAmt) <= 1.0) return true;
           return false;
         });
 
@@ -1433,21 +1430,32 @@ router.post("/post-grpo-je", async (req, res) => {
     const cleanDutyCode = String(customDutyCode || "V00040").trim();
     const isBp = customDutyAccountType === "BP" || /^[VC]/i.test(cleanDutyCode);
     const finalDate = parseExcelDateToIso(jeDate) || new Date().toISOString().split("T")[0];
-    const finalMemo =
+    const grpoTag = grpoDocNum ? `GRPO #${grpoDocNum}` : "";
+    const baseMemo =
       String(memo || "").trim() ||
-      (boeNo
-        ? `BCD of BOE No ${boeNo}`
-        : `BCD of BL ${blNo || ""}${grpoDocNum ? " GRPO #" + grpoDocNum : ""}`).slice(0, 50);
+      (boeNo ? `BCD of BOE No ${boeNo}` : `BCD Custom Duty`);
+    const finalMemo = (grpoTag && !baseMemo.includes(grpoTag) ? `${grpoTag} - ${baseMemo}` : baseMemo).slice(0, 50);
 
     let jdtNum = existingJeNum || null;
     let transId = existingJeTransId || null;
     let alreadyExistedInSap = false;
 
-    // SAFETY CHECK: Before creating a new JE, check if a JE for this BL / BOE / GRPO already exists in SAP JDT1!
-    if (!reconcileOnlyExistingJe && !jdtNum && !transId) {
+    // SAFETY CHECK: Before creating a new JE, check if an active (non-reversed) JE already exists for this GRPO #!
+    if (!reconcileOnlyExistingJe && !jdtNum && !transId && (grpoDocEntry || grpoDocNum)) {
       try {
-        const cleanBl = String(blNo || "").trim();
-        const cleanBoe = String(boeNo || "").trim();
+        // 1. Check BHV_RODTEP_BL Remarks for this GRPODocEntry / GRPODocNum
+        const [blRows] = await db.query(
+          `SELECT "Remarks" FROM "BHV_RODTEP_BL" WHERE ("GRPODocEntry" = ? OR "GRPODocNum" = ?) AND "Remarks" LIKE '%[JE#%'`,
+          [Number(grpoDocEntry || 0), Number(grpoDocNum || 0)]
+        );
+        let taggedJeNum = null;
+        if (blRows && blRows.length > 0) {
+          const m = String(blRows[0].Remarks || "").match(/\[JE#(\d+)/);
+          if (m) taggedJeNum = m[1];
+        }
+
+        // 2. Verify in JDT1/OJDT whether that JE (or a JE tagged with GRPO #<grpoDocNum>) exists and is NOT reversed
+        const gNumStr = grpoDocNum ? String(grpoDocNum).trim() : "";
         const [existingJes] = await db.query(
           `SELECT TOP 1 j1."TransId", j1."BaseRef", CAST(j1."Credit" AS DOUBLE) AS "Credit", CAST(j1."Debit" AS DOUBLE) AS "Debit"
            FROM "JDT1" j1
@@ -1457,17 +1465,18 @@ router.post("/post-grpo-je", async (req, res) => {
              AND COALESCE(j0."StornoToTr", 0) = 0
              AND NOT EXISTS (SELECT 1 FROM "OJDT" jx WHERE jx."StornoToTr" = j1."TransId")
              AND (
-               (? <> '' AND (j1."Ref1" = ? OR j0."Ref1" = ? OR j1."LineMemo" LIKE '%' || ? || '%' OR j0."Memo" LIKE '%' || ? || '%'))
-               OR (? <> '' AND (j1."Ref1" = ? OR j0."Ref1" = ? OR j1."LineMemo" LIKE '%' || ? || '%' OR j0."Memo" LIKE '%' || ? || '%'))
-               OR (? > 0 AND (j0."Ref2" = TO_VARCHAR(?) OR j1."Ref2" LIKE '%' || TO_VARCHAR(?) || '%' OR j1."LineMemo" LIKE '%GRPO #' || TO_VARCHAR(?) || '%'))
-               OR (ABS(j1."Credit" - ?) <= 0.5 OR ABS(j1."Debit" - ?) <= 0.5)
+               (? <> '' AND (j1."BaseRef" = ? OR TO_VARCHAR(j1."TransId") = ?))
+               OR (? <> '' AND (
+                 j1."Ref1" = 'GRPO#' || ?
+                 OR j0."Ref1" = 'GRPO#' || ?
+                 OR j1."LineMemo" LIKE '%GRPO #' || ? || '%'
+                 OR j0."Memo" LIKE '%GRPO #' || ? || '%'
+               ))
              )
            ORDER BY j1."TransId" DESC`,
           [
-            cleanBl, cleanBl, cleanBl, cleanBl, cleanBl,
-            cleanBoe, cleanBoe, cleanBoe, cleanBoe, cleanBoe,
-            Number(grpoDocNum || 0), Number(grpoDocNum || 0), Number(grpoDocNum || 0), Number(grpoDocNum || 0),
-            jeAmt, jeAmt
+            taggedJeNum || "", taggedJeNum || "", taggedJeNum || "",
+            gNumStr, gNumStr, gNumStr, gNumStr, gNumStr
           ]
         );
         if (existingJes && existingJes.length > 0) {
@@ -1508,9 +1517,10 @@ router.post("/post-grpo-je", async (req, res) => {
           .join(", ")
           .slice(0, 100) || (grpoDocNum ? "GRPO#" + String(grpoDocNum) : "");
 
-      dutyLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
+      const ref1Grpo = grpoDocNum ? `GRPO#${grpoDocNum}` : String(boeNo || "").slice(0, 100);
+      dutyLine.Reference1 = ref1Grpo;
       dutyLine.Reference2 = ref2Str;
-      rodtepLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
+      rodtepLine.Reference1 = ref1Grpo;
       rodtepLine.Reference2 = ref2Str;
 
       const jePayload = {
@@ -1518,7 +1528,7 @@ router.post("/post-grpo-je", async (req, res) => {
         DueDate: finalDate,
         TaxDate: finalDate,
         Memo: finalMemo,
-        Reference: String(boeNo || blNo || "").slice(0, 100),
+        Reference: ref1Grpo,
         Reference2: ref2Str,
         JournalEntryLines: [dutyLine, rodtepLine]
       };

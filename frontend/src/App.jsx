@@ -532,6 +532,7 @@ export default function App() {
       const cleanBoe = String(gBoe || "").trim().toUpperCase();
       const cleanGrpo = gNum ? String(gNum).trim() : "";
 
+      // Match strictly by explicit JE tag on this GRPO's rows or GRPO #<num> in SAP JDT1 (NEVER by BLNo)
       const matchedCreditRow = (glAllBoeCreditRows || [])
         .slice()
         .reverse()
@@ -544,18 +545,15 @@ export default function App() {
             return true;
           }
           const text = `${j.Ref1 || ""} ${j.Ref2 || ""} ${j.LineMemo || ""} ${j.HeaderRef1 || ""} ${j.HeaderRef2 || ""} ${j.HeaderMemo || ""}`.toUpperCase();
-          if (cleanBl && text.includes(cleanBl)) return true;
-          if (cleanBoe && cleanBoe !== "DRAFT" && text.includes(cleanBoe)) return true;
           if (
             cleanGrpo &&
-            (String(j.Ref2 || "").trim() === cleanGrpo ||
+            (String(j.Ref1 || "").trim().toUpperCase() === "GRPO#" + cleanGrpo ||
+              String(j.Ref2 || "").trim() === cleanGrpo ||
               text.includes("GRPO#" + cleanGrpo) ||
               text.includes("GRPO #" + cleanGrpo))
           ) {
             return true;
           }
-          const credAmt = Math.max(Number(j.OriginalCredit || 0), Number(j.OriginalDebit || 0));
-          if (targetAmt > 100 && Math.abs(credAmt - targetAmt) <= 1.0) return true;
           return false;
         });
 
