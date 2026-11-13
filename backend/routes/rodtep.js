@@ -477,7 +477,13 @@ router.post("/create-ap-and-scrips", async (req, res) => {
         Scheme: String(r.Scheme || r.scheme || "RODTEP").trim().toUpperCase(),
         PortCode: String(r.PortCode || r.portCode || "").trim().toUpperCase(),
         PortLocation: normalizePort(r.PortLocation || r.portLocation, "", r.PortCode || r.portCode) || "Mundra",
-        ScripAmount: Number(amt.toFixed(2))
+        ScripAmount: Number(amt.toFixed(2)),
+        RowAPDocEntry: r.APDocEntry ? Number(r.APDocEntry) : null,
+        RowAPDocNum: r.APDocNum ? Number(r.APDocNum) : null,
+        RowCardCode: r.CardCode || "",
+        RowCardName: r.CardName || "",
+        RowNumAtCard: r.NumAtCard || "",
+        RowAPDocDate: parseExcelDateToIso(r.APDocDate) || null
       });
     }
 
@@ -487,7 +493,7 @@ router.post("/create-ap-and-scrips", async (req, res) => {
 
     let finalDocEntry = existingApDocEntry ? Number(existingApDocEntry) : null;
     let finalDocNum = existingApDocNum ? Number(existingApDocNum) : null;
-    let finalCardCode = String(cardCode || "V00593").trim();
+    let finalCardCode = mode === "SAVE_ONLY" ? String(cardCode || "").trim() : String(cardCode || "V00593").trim();
     let finalCardName = String(cardName || "").trim();
     let finalNumAtCard = String(numAtCard || "").trim();
     let finalDocDate = parseExcelDateToIso(docDate) || new Date().toISOString().split("T")[0];
@@ -606,12 +612,12 @@ router.post("/create-ap-and-scrips", async (req, res) => {
               s.PortCode,
               s.PortLocation,
               s.ScripAmount,
-              finalDocEntry,
-              finalDocNum,
-              finalCardCode,
-              finalCardName,
-              finalNumAtCard,
-              finalDocDate
+              s.RowAPDocEntry || finalDocEntry || null,
+              s.RowAPDocNum || finalDocNum || null,
+              s.RowCardCode || finalCardCode || null,
+              s.RowCardName || finalCardName || null,
+              s.RowNumAtCard || finalNumAtCard || null,
+              s.RowAPDocDate || (finalDocEntry ? finalDocDate : null)
             ]
           );
         }
@@ -627,12 +633,12 @@ router.post("/create-ap-and-scrips", async (req, res) => {
     for (const s of cleanedScrips) {
       existingByLic.set(s.LicNo, {
         ...s,
-        APDocEntry: finalDocEntry,
-        APDocNum: finalDocNum,
-        CardCode: finalCardCode,
-        CardName: finalCardName,
-        NumAtCard: finalNumAtCard,
-        APDocDate: finalDocDate,
+        APDocEntry: s.RowAPDocEntry || finalDocEntry || null,
+        APDocNum: s.RowAPDocNum || finalDocNum || null,
+        CardCode: s.RowCardCode || finalCardCode || "",
+        CardName: s.RowCardName || finalCardName || "",
+        NumAtCard: s.RowNumAtCard || finalNumAtCard || "",
+        APDocDate: s.RowAPDocDate || (finalDocEntry ? finalDocDate : ""),
         CreatedAt: new Date().toISOString()
       });
     }
@@ -811,6 +817,69 @@ router.delete("/utilization/:id", async (req, res) => {
     local.utilizations = (local.utilizations || []).filter((u) => Number(u.Id) !== id);
     writeLocalStore(local);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// --- 8. PATCH /api/rodtep/scrip-ap-link: Link or Change SAP A/P Invoice on an Existing Scrip Later ---
+router.patch("/scrip-ap-link", async (req, res) => {
+  try {
+    const {
+      licNo,
+      apDocEntry = null,
+      apDocNum = null,
+      cardCode = "",
+      cardName = "",
+      numAtCard = "",
+      apDocDate = null
+    } = req.body;
+
+    const cleanLic = String(licNo || "").trim();
+    if (!cleanLic) {
+      return res.status(400).json({ error: "LicNo is required." });
+    }
+
+    const canUseHana = await ensureHanaTables();
+    if (canUseHana) {
+      try {
+        await db.execute(
+          `UPDATE "BHV_RODTEP_SCRIP"
+           SET "APDocEntry" = ?, "APDocNum" = ?, "CardCode" = ?, "CardName" = ?, "NumAtCard" = ?, "APDocDate" = ?
+           WHERE "LicNo" = ?`,
+          [
+            apDocEntry ? Number(apDocEntry) : null,
+            apDocNum ? Number(apDocNum) : null,
+            cardCode || null,
+            cardName || null,
+            numAtCard || null,
+            parseExcelDateToIso(apDocDate) || null,
+            cleanLic
+          ]
+        );
+      } catch (e) {
+        console.warn("[RoDTEP] HANA update scrip-ap-link fallback:", e.message);
+      }
+    }
+
+    const local = readLocalStore();
+    local.scrips = (local.scrips || []).map((s) =>
+      String(s.LicNo).trim() === cleanLic
+        ? {
+            ...s,
+            APDocEntry: apDocEntry ? Number(apDocEntry) : null,
+            APDocNum: apDocNum ? Number(apDocNum) : null,
+            CardCode: cardCode || "",
+            CardName: cardName || "",
+            NumAtCard: numAtCard || "",
+            APDocDate: parseExcelDateToIso(apDocDate) || ""
+          }
+        : s
+    );
+    writeLocalStore(local);
+
+    res.json({ success: true, licNo: cleanLic, apDocEntry, apDocNum });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

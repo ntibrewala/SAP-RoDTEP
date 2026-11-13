@@ -246,10 +246,10 @@ export default function App() {
   const [glAllBoeCreditRows, setGlAllBoeCreditRows] = useState([]);
   const [glReconPendingTotal, setGlReconPendingTotal] = useState(0);
   const [glTotalPurchasedFromStart, setGlTotalPurchasedFromStart] = useState(0);
-  const [glListViewMode, setGlListViewMode] = useState("ALL_AP"); // "ALL_AP" | "PENDING_ONLY" | "BOE_CREDITS"
+  const [glListViewMode, setGlListViewMode] = useState("PENDING_ONLY"); // "ALL_AP" | "PENDING_ONLY" | "BOE_CREDITS"
 
   // --- MODULE 1 STATE (Excel Paste -> Auto-Create AP Invoice) ---
-  const [apMode, setApMode] = useState("CREATE_AP"); // "CREATE_AP" or "LINK_EXISTING"
+  const [apMode, setApMode] = useState("SAVE_ONLY"); // "SAVE_ONLY" | "LINK_EXISTING" | "CREATE_AP"
   const [selectedCardCode, setSelectedCardCode] = useState("V00593");
   const [numAtCard, setNumAtCard] = useState("");
   const [docDate, setDocDate] = useState(() => new Date().toISOString().split("T")[0]);
@@ -274,6 +274,8 @@ export default function App() {
   const [portViewMode, setPortViewMode] = useState("SHOW_ALL_LOCK_OTHER"); // "SHOW_ALL_LOCK_OTHER" or "ONLY_MATCHING_PORT"
   const [checkedScrips, setCheckedScrips] = useState({}); // { [LicNo]: amountUsed }
   const [submittingBl, setSubmittingBl] = useState(false);
+  const [module2Search, setModule2Search] = useState("");
+  const [ledgerSearch, setLedgerSearch] = useState("");
 
   const fetchAllData = useCallback(async () => {
     setLoading(true);
@@ -445,6 +447,8 @@ export default function App() {
         text:
           apMode === "CREATE_AP"
             ? `Created SAP A/P Invoice #${data.apDocNum} (DocEntry: ${data.apDocEntry}) via Service Layer for ₹${formatINR(data.netInvoiceTotal)} and saved ${data.scripsCount} RoDTEP scrips!`
+            : apMode === "SAVE_ONLY"
+            ? `Saved ${data.scripsCount} Pending RoDTEP scrips (₹${formatINR(data.totalScripFaceValue)}) to Table 1! You can use them on BLs immediately and link their SAP A/P Invoice # anytime later.`
             : `Linked ${data.scripsCount} RoDTEP scrips (₹${formatINR(data.totalScripFaceValue)}) to SAP A/P Invoice #${data.apDocNum} (DocEntry: ${data.apDocEntry})!`
       });
 
@@ -511,13 +515,29 @@ export default function App() {
   }, [scrips]);
 
   const displayedPendingScrips = useMemo(() => {
-    if (portViewMode === "ONLY_MATCHING_PORT") {
-      return pendingScrips.filter(
-        (s) => String(s.PortLocation || "").toUpperCase() === selectedPort.toUpperCase()
+    const q = module2Search.trim().toLowerCase();
+    const filtered = pendingScrips.filter((s) => {
+      if (
+        portViewMode === "ONLY_MATCHING_PORT" &&
+        String(s.PortLocation || "").toUpperCase() !== selectedPort.toUpperCase()
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        String(s.LicNo || "").toLowerCase().includes(q) ||
+        String(s.ExporterName || "").toLowerCase().includes(q) ||
+        String(s.PortLocation || "").toLowerCase().includes(q) ||
+        String(s.PortCode || "").toLowerCase().includes(q) ||
+        String(s.Scheme || "").toLowerCase().includes(q) ||
+        String(s.APDocNum || "").toLowerCase().includes(q) ||
+        String(s.NumAtCard || "").toLowerCase().includes(q) ||
+        String(s.ScripAmount || "").includes(q) ||
+        String(s.BalanceAmount || "").includes(q)
       );
-    }
-    // Sort matching port first, or by date, while showing all pending scrips
-    return [...pendingScrips].sort((a, b) => {
+    });
+
+    return [...filtered].sort((a, b) => {
       const aMatch =
         String(a.PortLocation || "").toUpperCase() === selectedPort.toUpperCase() ? 0 : 1;
       const bMatch =
@@ -525,7 +545,7 @@ export default function App() {
       if (aMatch !== bMatch) return aMatch - bMatch;
       return String(a.LicDate || "").localeCompare(String(b.LicDate || ""));
     });
-  }, [pendingScrips, portViewMode, selectedPort]);
+  }, [pendingScrips, portViewMode, selectedPort, module2Search]);
 
   const handleToggleScripCheckbox = (scrip) => {
     const isPortMatch =
@@ -707,6 +727,33 @@ export default function App() {
       setBanner({
         type: "error",
         text: err.response?.data?.error || err.message
+      });
+    }
+  };
+
+  const handleLinkApToExistingScrip = async (licNo, apDocEntryStr) => {
+    try {
+      const foundAp = apInvoices.find((a) => String(a.DocEntry) === String(apDocEntryStr));
+      await apiRequest("PATCH", "/scrip-ap-link", {
+        licNo,
+        apDocEntry: foundAp ? foundAp.DocEntry : null,
+        apDocNum: foundAp ? foundAp.DocNum : null,
+        cardCode: foundAp ? foundAp.CardCode : "",
+        cardName: foundAp ? foundAp.CardName : "",
+        numAtCard: foundAp ? foundAp.NumAtCard : "",
+        apDocDate: foundAp ? foundAp.DocDate : null
+      });
+      await fetchAllData();
+      setBanner({
+        type: "success",
+        text: foundAp
+          ? `Linked Scrip ${licNo} to SAP A/P Invoice #${foundAp.DocNum} (${foundAp.NumAtCard || foundAp.CardName})!`
+          : `Unlinked A/P Invoice from Scrip ${licNo}.`
+      });
+    } catch (err) {
+      setBanner({
+        type: "error",
+        text: err.response?.data?.error || err.message || "Failed to update AP Invoice link."
       });
     }
   };
@@ -1068,17 +1115,17 @@ export default function App() {
                   </h2>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setApMode("CREATE_AP")}
+                    onClick={() => setApMode("SAVE_ONLY")}
                     className={`px-3.5 py-2 rounded-[4px] text-[11px] font-bold uppercase tracking-wider cursor-pointer ${
-                      apMode === "CREATE_AP"
-                        ? "bg-[#1a1a1a] text-white"
+                      apMode === "SAVE_ONLY"
+                        ? "bg-[#c8102e] text-white"
                         : "bg-[#f4f2ef] text-[#555] hover:bg-[#e8e4dd]"
                     }`}
                   >
-                    Create New AP Invoice (Service Layer)
+                    1. Import Pending Scrips (Link AP # Later)
                   </button>
                   <button
                     type="button"
@@ -1089,13 +1136,30 @@ export default function App() {
                         : "bg-[#f4f2ef] text-[#555] hover:bg-[#e8e4dd]"
                     }`}
                   >
-                    Link to Existing SAP AP Invoice
+                    2. Link Batch to SAP AP Invoice
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApMode("CREATE_AP")}
+                    className={`px-3.5 py-2 rounded-[4px] text-[11px] font-bold uppercase tracking-wider cursor-pointer ${
+                      apMode === "CREATE_AP"
+                        ? "bg-[#1a1a1a] text-white"
+                        : "bg-[#f4f2ef] text-[#555] hover:bg-[#e8e4dd]"
+                    }`}
+                  >
+                    3. Create New AP Invoice (Service Layer)
                   </button>
                 </div>
               </div>
 
               {/* A/P Invoice Header Fields */}
-              {apMode === "LINK_EXISTING" ? (
+              {apMode === "SAVE_ONLY" ? (
+                <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-[6px] text-[12.5px] text-emerald-950 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <strong>Quick Pending Import Mode:</strong> Paste your pending RoDTEP scrips (~₹34.49 Lakhs) below and save them directly. You do <strong>not</strong> need to select an A/P Invoice now — you can link or change the SAP A/P Invoice # per scrip anytime later in Tab 3 (or in the optional AP # column below).
+                  </div>
+                </div>
+              ) : apMode === "LINK_EXISTING" ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#f4f2ef]/70 p-4 rounded-[6px] border border-black/[0.08]">
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1.5">
@@ -1314,6 +1378,7 @@ export default function App() {
                           <th className="py-2.5 px-3">Port Code</th>
                           <th className="py-2.5 px-3 text-right">Scrip Amount (₹)</th>
                           <th className="py-2.5 px-3">Port Location</th>
+                          <th className="py-2.5 px-3">SAP AP # (Optional / Later)</th>
                           <th className="py-2.5 px-3 text-center">Del</th>
                         </tr>
                       </thead>
@@ -1390,6 +1455,36 @@ export default function App() {
                                   <option value="Chennai">Chennai</option>
                                 </select>
                               </td>
+                              <td className="py-2 px-3">
+                                <select
+                                  value={row.APDocEntry || ""}
+                                  onChange={(e) => {
+                                    const entry = e.target.value;
+                                    const found = apInvoices.find((a) => String(a.DocEntry) === String(entry));
+                                    setPastedScrips((prev) => {
+                                      const copy = [...prev];
+                                      copy[idx] = {
+                                        ...copy[idx],
+                                        APDocEntry: found ? found.DocEntry : null,
+                                        APDocNum: found ? found.DocNum : null,
+                                        CardCode: found ? found.CardCode : "",
+                                        CardName: found ? found.CardName : "",
+                                        NumAtCard: found ? found.NumAtCard : "",
+                                        APDocDate: found ? found.DocDate : ""
+                                      };
+                                      return copy;
+                                    });
+                                  }}
+                                  className="px-2 py-1 bg-white border border-black/15 rounded font-mono-code text-[11px] max-w-[180px]"
+                                >
+                                  <option value="">-- Link AP Later --</option>
+                                  {apInvoices.map((inv) => (
+                                    <option key={inv.DocEntry} value={inv.DocEntry}>
+                                      #{inv.DocNum} ({inv.NumAtCard || inv.DocDate}) · Pending ₹{formatINR(inv.InternalReconPending)}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
                               <td className="py-2 px-3 text-center">
                                 <button
                                   type="button"
@@ -1418,6 +1513,8 @@ export default function App() {
                         ? "Posting to SAP..."
                         : apMode === "CREATE_AP"
                         ? `Create SAP A/P Invoice (₹${formatINR(pastedSummary.netPayable)}) & Save ${pastedSummary.count} Scrips`
+                        : apMode === "SAVE_ONLY"
+                        ? `Save ${pastedSummary.count} Pending Scrips (₹${formatINR(pastedSummary.total)}) — Link AP Invoice Later`
                         : `Link ${pastedSummary.count} Scrips (₹${formatINR(pastedSummary.total)}) to Selected A/P Invoice`}
                     </button>
                   </div>
@@ -1642,6 +1739,22 @@ export default function App() {
                       ? "Saving BL Attachment..."
                       : `Attach ${allocationSummary.checkedCount} Scrip(s) to BL`}
                   </button>
+                </div>
+              </div>
+
+              {/* Search Bar for Pending RoDTEP Scrips */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[260px]">
+                  <input
+                    type="text"
+                    value={module2Search}
+                    onChange={(e) => setModule2Search(e.target.value)}
+                    placeholder="Search pending scrips by RoDTEP Lic No, Exporter, Amount, Port, or AP # (No AP Invoice selection needed)..."
+                    className="w-full px-3.5 py-2 bg-white border border-black/20 rounded-[4px] text-[12.5px] font-mono-code"
+                  />
+                </div>
+                <div className="text-[11.5px] text-[#666] font-mono-code">
+                  Showing <strong>{displayedPendingScrips.length}</strong> of <strong>{pendingScrips.length}</strong> pending scrips
                 </div>
               </div>
 
@@ -1892,8 +2005,17 @@ export default function App() {
                     Table 1 · BHV_RODTEP_SCRIP (Balance Calculated On-The-Fly)
                   </span>
                   <h3 className="text-lg font-extrabold text-[#1a1a1a] mt-0.5">
-                    All RoDTEP / RoSCTL Scrips ({scrips.length})
+                    All RoDTEP / RoSCTL Scrips ({scrips.length}) — Link or Change SAP A/P Invoice # Anytime
                   </h3>
+                </div>
+                <div className="w-full sm:w-80">
+                  <input
+                    type="text"
+                    value={ledgerSearch}
+                    onChange={(e) => setLedgerSearch(e.target.value)}
+                    placeholder="Search Lic No, Exporter, Amount, AP #..."
+                    className="w-full px-3 py-1.5 bg-white border border-black/20 rounded-[4px] text-[12px] font-mono-code"
+                  />
                 </div>
               </div>
 
@@ -1914,7 +2036,20 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-black/[0.06] bg-white">
-                    {scrips.map((s) => {
+                    {scrips
+                      .filter((s) => {
+                        const q = ledgerSearch.trim().toLowerCase();
+                        if (!q) return true;
+                        return (
+                          String(s.LicNo || "").toLowerCase().includes(q) ||
+                          String(s.ExporterName || "").toLowerCase().includes(q) ||
+                          String(s.PortLocation || "").toLowerCase().includes(q) ||
+                          String(s.APDocNum || "").toLowerCase().includes(q) ||
+                          String(s.NumAtCard || "").toLowerCase().includes(q) ||
+                          String(s.ScripAmount || "").includes(q)
+                        );
+                      })
+                      .map((s) => {
                       const bal = Number(s.BalanceAmount || 0);
                       const util = Number(s.UtilizedAmount || 0);
                       return (
@@ -1936,7 +2071,22 @@ export default function App() {
                             </span>
                           </td>
                           <td className="py-2 px-3 font-mono-code">
-                            {s.APDocNum ? `#${s.APDocNum} (${s.NumAtCard || ""})` : "—"}
+                            <select
+                              value={s.APDocEntry || ""}
+                              onChange={(e) => handleLinkApToExistingScrip(s.LicNo, e.target.value)}
+                              className={`px-2 py-1 rounded text-[11px] font-mono-code border ${
+                                s.APDocNum
+                                  ? "bg-emerald-50 border-emerald-300 text-emerald-900 font-bold"
+                                  : "bg-amber-50 border-amber-300 text-amber-900"
+                              }`}
+                            >
+                              <option value="">-- Unlinked (Link AP Later) --</option>
+                              {apInvoices.map((inv) => (
+                                <option key={inv.DocEntry} value={inv.DocEntry}>
+                                  #{inv.DocNum} | {inv.NumAtCard || inv.DocDate} | ₹{formatINR(inv.InternalReconPending)}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="py-2 px-3 text-right font-mono-code">
                             ₹{formatINR(s.ScripAmount)}
