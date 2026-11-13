@@ -44,7 +44,7 @@ if (fs.existsSync(builtDir)) {
   });
 }
 
-const PORT = process.env.PORT || 5060;
+const PORT = process.env.PORT || 5065;
 app.listen(PORT, (err) => {
   if (err) {
     console.error(`Failed to start RoDTEP Server on port ${PORT}:`, err.message);
