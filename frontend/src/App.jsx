@@ -67,6 +67,112 @@ MOHAN MOTORS,2610046108,29.10.2026,RODTEP,INWFD6,5056
 BELIEVE COSMETICS PRIVATE LIMITED,2504000070,01.04.2025,RODTEP,INNSA1,5003
 ,,,,,2551794,`;
 
+function formatDateDMY(isoOrRaw) {
+  if (!isoOrRaw) return "";
+  const s = String(isoOrRaw).trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}.${m[2]}.${m[1]}`;
+  return s;
+}
+
+function downloadChaExcel({ blNo, grpoDocNum, boeNo, draftBoeAmount, attachedScrips, allScrips = [] }) {
+  const cleanBl = String(blNo || "BL").trim();
+  const scripLookup = new Map((allScrips || []).map((s) => [String(s.LicNo).trim(), s]));
+
+  let totalUsed = 0;
+  const rowsHtml = (attachedScrips || [])
+    .map((u, idx) => {
+      const lic = String(u.LicNo || "").trim();
+      const s = scripLookup.get(lic) || {};
+      const exporter = u.ExporterName || s.ExporterName || "";
+      const licDate = formatDateDMY(u.LicDate || s.LicDate || "");
+      const scheme = u.Scheme || s.Scheme || "RODTEP";
+      const portCode = u.PortCode || s.PortCode || "";
+      const origAmt = Number(u.ScripAmount || s.ScripAmount || u.AmountUsed || 0);
+      const usedAmt = Number(u.AmountUsed || 0);
+      totalUsed += usedAmt;
+
+      return `
+        <tr>
+          <td style="text-align:center;">${idx + 1}</td>
+          <td style="font-weight:bold;">${cleanBl}</td>
+          <td>${exporter}</td>
+          <td style="mso-number-format:\@; font-weight:bold; text-align:center;">${lic}</td>
+          <td style="text-align:center;">${licDate}</td>
+          <td style="text-align:center;">${scheme}</td>
+          <td style="text-align:center;">${portCode}</td>
+          <td style="text-align:right; mso-number-format:#,##0.00;">${origAmt.toFixed(2)}</td>
+          <td style="text-align:right; font-weight:bold; background:#e6f4ea; mso-number-format:#,##0.00;">${usedAmt.toFixed(2)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  const html = `
+    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+    <head>
+      <meta charset="UTF-8">
+      <!--[if gte mso 9]>
+      <xml>
+        <x:ExcelWorkbook>
+          <x:ExcelWorksheets>
+            <x:ExcelWorksheet>
+              <x:Name>CHA RoDTEP Scrips</x:Name>
+              <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+            </x:ExcelWorksheet>
+          </x:ExcelWorksheets>
+        </x:ExcelWorkbook>
+      </xml>
+      <![endif]-->
+    </head>
+    <body>
+      <table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse; font-family:Calibri, Arial, sans-serif; font-size:11pt;">
+        <tr style="background:#1a1a1a; color:#ffffff; font-weight:bold; font-size:13pt;">
+          <td colspan="9">BHAVYA POLYFILMS PRIVATE LIMITED — RoDTEP / RoSCTL SCRIP DETAILS FOR CHA (BOE FILING)</td>
+        </tr>
+        <tr style="background:#f4f2ef; font-weight:bold;">
+          <td colspan="2">BL Number:</td>
+          <td colspan="2" style="color:#c8102e; font-size:12pt;">${cleanBl}</td>
+          <td>GRPO / BOE Ref:</td>
+          <td colspan="2">${grpoDocNum ? "GRPO #" + grpoDocNum : ""} ${boeNo ? "| BOE: " + boeNo : "(Draft BOE)"}</td>
+          <td>Draft BOE Duty (₹):</td>
+          <td style="text-align:right; mso-number-format:#,##0.00;">${Number(draftBoeAmount || totalUsed).toFixed(2)}</td>
+        </tr>
+        <tr><td colspan="9"></td></tr>
+        <tr style="background:#c8102e; color:#ffffff; font-weight:bold; text-align:center;">
+          <th>Sr. No.</th>
+          <th>BL Number</th>
+          <th>Exporter Name</th>
+          <th>RoDTEP / RoSCTL Lic No.</th>
+          <th>Scrip Date</th>
+          <th>Scheme</th>
+          <th>Port Code</th>
+          <th>Scrip Face Value (₹)</th>
+          <th>Amount to Use in BOE (₹)</th>
+        </tr>
+        ${rowsHtml}
+        <tr style="background:#f4f2ef; font-weight:bold; font-size:11.5pt;">
+          <td colspan="8" style="text-align:right;">TOTAL RoDTEP / RoSCTL SCRIP AMOUNT TO UTILIZE FOR BL ${cleanBl}:</td>
+          <td style="text-align:right; background:#d1fae5; mso-number-format:#,##0.00;">${totalUsed.toFixed(2)}</td>
+        </tr>
+      </table>
+    </body>
+    </html>
+  `;
+
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const safeBl = cleanBl.replace(/[^a-zA-Z0-9_-]/g, "_");
+  a.href = url;
+  a.download = `CHA_RoDTEP_Scrips_BL_${safeBl}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function cleanBlForExcel(v) { return String(v || "").trim(); }
 function formatINR(val) {
   const n = Number(val || 0);
   if (isNaN(n)) return "0.00";
@@ -835,9 +941,17 @@ export default function App() {
       };
 
       const res = await apiRequest("POST", "/allocate-bl", payload);
+      downloadChaExcel({
+        blNo: cleanBlForExcel(blNo),
+        grpoDocNum: selectedGrpoDocNum,
+        boeNo: boeNo.trim(),
+        draftBoeAmount: allocationSummary.targetBoe,
+        attachedScrips: allocations,
+        allScrips: scrips
+      });
       setBanner({
         type: "success",
-        text: `Attached ${res.data.count} RoDTEP scrip(s) totaling ₹${formatINR(res.data.totalAllocated)} to BL ${res.data.blNo}${res.data.grpoDocNum ? ` (GRPO #${res.data.grpoDocNum})` : ""} !`
+        text: `Attached ${res.data.count} RoDTEP scrip(s) totaling ₹${formatINR(res.data.totalAllocated)} to BL ${res.data.blNo}${res.data.grpoDocNum ? ` (GRPO #${res.data.grpoDocNum})` : ""} & downloaded CHA Excel sheet!`
       });
 
       setCheckedScrips({});
@@ -2296,6 +2410,23 @@ export default function App() {
                                     <>
                                       <button
                                         type="button"
+                                        onClick={() =>
+                                          downloadChaExcel({
+                                            blNo: r.BLNo,
+                                            grpoDocNum: r.GRPODocNum,
+                                            boeNo: r.BOENo,
+                                            draftBoeAmount: r.DraftBOEAmount || r.totalAttached,
+                                            attachedScrips: r.attachedScrips,
+                                            allScrips: scrips
+                                          })
+                                        }
+                                        className="px-2.5 py-1 bg-[#c8102e] hover:bg-[#a00c24] text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                        title="Download Excel sheet for CHA with BL Number and attached RoDTEP Scrips"
+                                      >
+                                        ⬇ CHA Excel
+                                      </button>
+                                      <button
+                                        type="button"
                                         onClick={() => toggleExpandGrpo(r.rowKey)}
                                         className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
                                       >
@@ -2551,12 +2682,28 @@ export default function App() {
                             {isExpanded && r.attachedScrips.length > 0 && (
                               <tr className="bg-[#f8fafc]">
                                 <td colSpan={9} className="p-3 border-l-4 border-l-blue-600">
-                                  <div className="text-[11px] font-bold uppercase tracking-wider text-blue-900 mb-2 flex items-center justify-between">
+                                  <div className="text-[11px] font-bold uppercase tracking-wider text-blue-900 mb-2 flex flex-wrap items-center justify-between gap-2">
                                     <span>
                                       Attached RoDTEP / RoSCTL Scrips for{" "}
                                       {r.GRPODocNum ? `GRPO #${r.GRPODocNum}` : ""} (BL: {r.BLNo || "—"}) —{" "}
                                       {r.attachedScrips.length} Scrips Totaling ₹{formatINR(r.totalAttached)}
                                     </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        downloadChaExcel({
+                                          blNo: r.BLNo,
+                                          grpoDocNum: r.GRPODocNum,
+                                          boeNo: r.BOENo,
+                                          draftBoeAmount: r.DraftBOEAmount || r.totalAttached,
+                                          attachedScrips: r.attachedScrips,
+                                          allScrips: scrips
+                                        })
+                                      }
+                                      className="px-3 py-1 bg-[#c8102e] hover:bg-[#a00c24] text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer"
+                                    >
+                                      ⬇ Download CHA Excel (BL {r.BLNo})
+                                    </button>
                                   </div>
                                   <div className="overflow-x-auto border border-blue-200 rounded bg-white">
                                     <table className="w-full text-left border-collapse text-[11.5px]">
