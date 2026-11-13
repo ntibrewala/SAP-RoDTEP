@@ -564,6 +564,7 @@ export default function App() {
         attachedScrips: matchingUtils,
         isAttached,
         JENum: postedJeUtil ? postedJeUtil.JENum || postedJeUtil.JETransId : null,
+        JETransId: postedJeUtil ? postedJeUtil.JETransId || postedJeUtil.JENum : null,
         JEDate: postedJeUtil ? postedJeUtil.JEDate : null,
         ReconciledInSAP: postedJeUtil ? !!postedJeUtil.ReconciledInSAP : false
       });
@@ -602,6 +603,7 @@ export default function App() {
         attachedScrips: list,
         isAttached: true,
         JENum: postedJeUtil ? postedJeUtil.JENum || postedJeUtil.JETransId : null,
+        JETransId: postedJeUtil ? postedJeUtil.JETransId || postedJeUtil.JENum : null,
         JEDate: postedJeUtil ? postedJeUtil.JEDate : null,
         ReconciledInSAP: postedJeUtil ? !!postedJeUtil.ReconciledInSAP : false
       });
@@ -1074,6 +1076,40 @@ export default function App() {
       setBanner({
         type: "error",
         text: err.response?.data?.error || err.message || "Failed to post Custom Duty JE."
+      });
+    } finally {
+      setSubmittingJe(false);
+    }
+  };
+
+  const handleReconcileExistingJe = async (r) => {
+    setSubmittingJe(true);
+    setBanner(null);
+    try {
+      const apReconBreakdown = getGrpoApBreakdown(r);
+      const res = await apiRequest("POST", "/post-grpo-je", {
+        grpoDocEntry: r.GRPODocEntry,
+        grpoDocNum: r.GRPODocNum,
+        blNo: r.BLNo,
+        boeNo: r.BOENo || "",
+        jeDate: r.JEDate || new Date().toISOString().split("T")[0],
+        amount: Number(r.totalAttached || r.DraftBOEAmount || 0),
+        reconcileWithAp: true,
+        reconcileOnlyExistingJe: true,
+        existingJeNum: r.JENum,
+        existingJeTransId: r.JETransId,
+        apReconBreakdown
+      });
+      const d = res.data;
+      setBanner({
+        type: d.reconStatus?.reconciled ? "success" : "info",
+        text: d.reconStatus?.message || `Processed reconciliation for JE #${r.JENum}.`
+      });
+      await fetchAllData();
+    } catch (err) {
+      setBanner({
+        type: "error",
+        text: err.response?.data?.error || err.message || "Failed to reconcile existing JE."
       });
     } finally {
       setSubmittingJe(false);
@@ -2465,9 +2501,22 @@ export default function App() {
                                           : `View Scrips (${r.attachedScrips.length}) ▼`}
                                       </button>
                                       {r.JENum ? (
-                                        <span className="px-2 py-1 bg-purple-100 text-purple-900 border border-purple-300 rounded text-[10px] font-bold uppercase whitespace-nowrap">
-                                          ✓ JE #{r.JENum}
-                                        </span>
+                                        <>
+                                          <span className="px-2 py-1 bg-purple-100 text-purple-900 border border-purple-300 rounded text-[10px] font-bold uppercase whitespace-nowrap">
+                                            ✓ JE #{r.JENum} {r.ReconciledInSAP ? "(Reconciled)" : "(Posted)"}
+                                          </span>
+                                          {!r.ReconciledInSAP && (
+                                            <button
+                                              type="button"
+                                              disabled={submittingJe}
+                                              onClick={() => handleReconcileExistingJe(r)}
+                                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                              title="Reconcile this already-posted JE with the linked A/P Invoice(s) on G/L 370001 without posting a duplicate JE"
+                                            >
+                                              Reconcile JE #{r.JENum}
+                                            </button>
+                                          )}
+                                        </>
                                       ) : (
                                         <button
                                           type="button"

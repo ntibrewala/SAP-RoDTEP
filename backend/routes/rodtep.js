@@ -451,9 +451,13 @@ router.get("/scrips", async (req, res) => {
           TO_VARCHAR(j1."RefDate", 'YYYY-MM-DD') AS "RefDate",
           CAST(j1."Debit" AS DOUBLE) AS "OriginalDebit",
           CAST(j1."Credit" AS DOUBLE) AS "OriginalCredit",
+          CAST(j1."BalDueDeb" AS DOUBLE) AS "BalDueDeb",
+          CAST(j1."BalDueCred" AS DOUBLE) AS "BalDueCred",
           CAST(j1."BalDueDeb" - j1."BalDueCred" AS DOUBLE) AS "PendingReconBalance",
           CAST((j1."Debit" - j1."Credit") - (j1."BalDueDeb" - j1."BalDueCred") AS DOUBLE) AS "ReconciledAmount",
           j1."LineMemo",
+          COALESCE(j1."Ref1", '') AS "Ref1",
+          COALESCE(j1."Ref2", '') AS "Ref2",
           p0."DocEntry" AS "APDocEntry",
           p0."DocNum" AS "APDocNum",
           p0."CANCELED" AS "APCanceled",
@@ -470,7 +474,61 @@ router.get("/scrips", async (req, res) => {
         (r) => String(r.TransType) === "18" && Number(r.OriginalDebit) > 0 && r.APCanceled === "N"
       );
       glAllBoeCreditRows = allJdt.filter((r) => Number(r.OriginalCredit) > 0 && String(r.TransType) !== "18");
-      glReconPendingRows = allJdt.filter((r) => Math.abs(Number(r.PendingReconBalance || 0)) > 0.001);
+      glReconPendingRows = allJdt.filter(
+        (r) => String(r.TransType) === "18" && r.APCanceled === "N" && Number(r.PendingReconBalance || 0) > 0.001
+      );
+
+      // Cross-match manual JEs (TransType = '30') in SAP JDT1 against utilRows so already-posted JEs are always detected
+      const manualJes = allJdt.filter((r) => String(r.TransType) === "30");
+      utilRows = (utilRows || []).map((u) => {
+        let jeNum = u.JENum || null;
+        let jeTransId = u.JETransId || null;
+        let reconciledInSap = !!u.ReconciledInSAP;
+        let jeDirectionPosted = u.JEDirection || null;
+
+        // Parse [JE#12345:RECONCILED] tag from Remarks if stored in HANA
+        const rem = String(u.Remarks || "");
+        const tagMatch = rem.match(/\[JE#(\d+)(:RECONCILED)?\]/);
+        if (tagMatch) {
+          jeNum = jeNum || tagMatch[1];
+          if (tagMatch[2]) reconciledInSap = true;
+        }
+
+        const uBl = String(u.BLNo || "").trim().toUpperCase();
+        const uBoe = String(u.BOENo || "").trim().toUpperCase();
+        const uGrpo = u.GRPODocNum ? String(u.GRPODocNum).trim() : "";
+
+        const matchedSapJe = manualJes.find((j) => {
+          if (jeTransId && Number(j.TransId) === Number(jeTransId)) return true;
+          if (jeNum && String(j.BaseRef) === String(jeNum)) return true;
+          const r1 = String(j.Ref1 || "").trim().toUpperCase();
+          const r2 = String(j.Ref2 || "").trim().toUpperCase();
+          const memo = String(j.LineMemo || "").toUpperCase();
+          if (uBl && (r1 === uBl || memo.includes(uBl))) return true;
+          if (uBoe && uBoe !== "DRAFT" && (r1 === uBoe || memo.includes(uBoe))) return true;
+          if (uGrpo && (r2.includes("GRPO#" + uGrpo) || memo.includes("GRPO #" + uGrpo))) return true;
+          return false;
+        });
+
+        if (matchedSapJe) {
+          jeNum = matchedSapJe.BaseRef || matchedSapJe.TransId;
+          jeTransId = matchedSapJe.TransId;
+          reconciledInSap =
+            Number(matchedSapJe.BalDueCred || 0) <= 0.5 && Number(matchedSapJe.BalDueDeb || 0) <= 0.5;
+          jeDirectionPosted =
+            Number(matchedSapJe.Credit || 0) > 0
+              ? "CREDIT_370001_DEBIT_DUTY"
+              : "DEBIT_370001_CREDIT_DUTY";
+        }
+
+        return {
+          ...u,
+          JENum: jeNum,
+          JETransId: jeTransId,
+          ReconciledInSAP: reconciledInSap,
+          JEDirection: jeDirectionPosted
+        };
+      });
       glReconPendingTotal = Number(
         glReconPendingRows.reduce((sum, r) => sum + Number(r.PendingReconBalance || 0), 0).toFixed(2)
       );
@@ -1066,28 +1124,28 @@ router.get("/custom-duty-accounts", async (req, res) => {
     let glAccounts = [];
     try {
       const [bps] = await db.query(`
-        SELECT "CardCode" AS "Code", "CardName" AS "Name", BP AS "Type"
+        SELECT "CardCode" AS "Code", "CardName" AS "Name", 'BP' AS "Type"
         FROM "OCRD"
-        WHERE "CardCode" = V00040
-           OR UPPER("CardName") LIKE %CUSTOM%
-           OR UPPER("CardName") LIKE %DUTY%
-           OR UPPER("CardName") LIKE %COMMISSIONER%
-           OR UPPER("CardName") LIKE %PORT%
-        ORDER BY CASE WHEN "CardCode" = V00040 THEN 0 ELSE 1 END, "CardName"
+        WHERE "CardCode" = 'V00040'
+           OR UPPER("CardName") LIKE '%CUSTOM%'
+           OR UPPER("CardName") LIKE '%DUTY%'
+           OR UPPER("CardName") LIKE '%COMMISSIONER%'
+           OR UPPER("CardName") LIKE '%PORT%'
+        ORDER BY CASE WHEN "CardCode" = 'V00040' THEN 0 ELSE 1 END, "CardName"
       `);
       bpAccounts = bps || [];
     } catch (_) {}
 
     try {
       const [gls] = await db.query(`
-        SELECT "AcctCode" AS "Code", "AcctName" AS "Name", GL AS "Type"
+        SELECT "AcctCode" AS "Code", "AcctName" AS "Name", 'GL' AS "Type"
         FROM "OACT"
-        WHERE "AcctCode" IN (520053, 370001, 410023)
-           OR UPPER("AcctName") LIKE %CUSTOM%
-           OR UPPER("AcctName") LIKE %DUTY%
-           OR UPPER("AcctName") LIKE %RODTEP%
-           OR UPPER("AcctName") LIKE %BCD%
-        ORDER BY CASE WHEN "AcctCode" = 520053 THEN 0 ELSE 1 END, "AcctName"
+        WHERE "AcctCode" IN ('520053', '370001', '410023')
+           OR UPPER("AcctName") LIKE '%CUSTOM%'
+           OR UPPER("AcctName") LIKE '%DUTY%'
+           OR UPPER("AcctName") LIKE '%RODTEP%'
+           OR UPPER("AcctName") LIKE '%BCD%'
+        ORDER BY CASE WHEN "AcctCode" = '520053' THEN 0 ELSE 1 END, "AcctName"
       `);
       glAccounts = gls || [];
     } catch (_) {}
@@ -1097,6 +1155,151 @@ router.get("/custom-duty-accounts", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Helper function to execute SAP Internal Reconciliation on G/L 370001 for an existing JE TransId / JdtNum
+async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconBreakdown = [] }) {
+  const reconStatus = { attempted: true, reconciled: false, message: "" };
+  try {
+    const [jeLineRows] = await db.query(
+      `SELECT "TransId", "Line_ID", CAST("Credit" AS DOUBLE) AS "Credit", CAST("Debit" AS DOUBLE) AS "Debit",
+              CAST("BalDueCred" AS DOUBLE) AS "BalDueCred", CAST("BalDueDeb" AS DOUBLE) AS "BalDueDeb"
+       FROM "JDT1"
+       WHERE ("TransId" = ? OR "BaseRef" = ?) AND "Account" = '370001'`,
+      [Number(transId || jdtNum), String(jdtNum || transId)]
+    );
+
+    if (!jeLineRows || jeLineRows.length === 0) {
+      reconStatus.message = `Could not find G/L 370001 line in JDT1 for JE #${jdtNum || transId}.`;
+      return reconStatus;
+    }
+
+    const jeLine = jeLineRows[0];
+    if (Number(jeLine.Debit || 0) > 0 && Number(jeLine.Credit || 0) === 0) {
+      reconStatus.message = `JE #${jdtNum || transId} was posted as a DEBIT on 370001. Because A/P Invoices are also DEBITs on 370001, SAP can only reconcile a CREDIT on 370001 against an A/P Invoice DEBIT.`;
+      return reconStatus;
+    }
+
+    const openJeCred = Number(jeLine.BalDueCred || 0);
+    if (openJeCred <= 0.01) {
+      reconStatus.reconciled = true;
+      reconStatus.message = `JE #${jdtNum || transId} is already reconciled in SAP (BalDueCred = 0).`;
+      return reconStatus;
+    }
+
+    const [openApLines] = await db.query(`
+      SELECT j1."TransId", j1."Line_ID", CAST(j1."BalDueDeb" AS DOUBLE) AS "BalDueDeb",
+             p0."DocEntry", p0."DocNum", p0."NumAtCard"
+      FROM "JDT1" j1
+      INNER JOIN "OPCH" p0 ON p0."TransId" = j1."TransId"
+      WHERE j1."Account" = '370001' AND j1."BalDueDeb" > 0 AND p0."CANCELED" = 'N'
+      ORDER BY p0."DocDate" ASC, p0."DocEntry" ASC
+    `);
+
+    if (!openApLines || openApLines.length === 0) {
+      reconStatus.message = `No open unreconciled A/P Invoice Debit lines found on G/L 370001 in SAP.`;
+      return reconStatus;
+    }
+
+    let remainingToRecon = Math.min(Number(jeAmt || openJeCred), openJeCred);
+    const reconRows = [];
+
+    const exactAmtByDocEntry = new Map();
+    const exactAmtByDocNum = new Map();
+    for (const item of apReconBreakdown || []) {
+      if (item.apDocEntry && Number(item.amount) > 0) {
+        exactAmtByDocEntry.set(
+          Number(item.apDocEntry),
+          (exactAmtByDocEntry.get(Number(item.apDocEntry)) || 0) + Number(item.amount)
+        );
+      }
+      if (item.apDocNum && Number(item.amount) > 0) {
+        exactAmtByDocNum.set(
+          Number(item.apDocNum),
+          (exactAmtByDocNum.get(Number(item.apDocNum)) || 0) + Number(item.amount)
+        );
+      }
+    }
+
+    const usedApTransIds = new Set();
+
+    // Pass 1: Match specific AP Invoices from attached scrips
+    for (const apLine of openApLines) {
+      if (remainingToRecon <= 0.01) break;
+      const wantedAmt =
+        exactAmtByDocEntry.get(Number(apLine.DocEntry)) ||
+        exactAmtByDocNum.get(Number(apLine.DocNum)) ||
+        0;
+      if (wantedAmt <= 0.01) continue;
+      const availDeb = Number(apLine.BalDueDeb || 0);
+      if (availDeb <= 0.01) continue;
+      const useRecon = Number(Math.min(availDeb, wantedAmt, remainingToRecon).toFixed(2));
+      if (useRecon > 0) {
+        reconRows.push({
+          ShortName: "370001",
+          TransId: Number(apLine.TransId),
+          TransRowId: Number(apLine.Line_ID),
+          ReconcileAmount: useRecon,
+          CreditOrDebit: "codDebit"
+        });
+        usedApTransIds.add(Number(apLine.TransId));
+        remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
+      }
+    }
+
+    // Pass 2: Fallback to oldest open AP Invoices if any balance remains
+    for (const apLine of openApLines) {
+      if (remainingToRecon <= 0.01) break;
+      if (usedApTransIds.has(Number(apLine.TransId))) continue;
+      const availDeb = Number(apLine.BalDueDeb || 0);
+      if (availDeb <= 0.01) continue;
+      const useRecon = Number(Math.min(availDeb, remainingToRecon).toFixed(2));
+      reconRows.push({
+        ShortName: "370001",
+        TransId: Number(apLine.TransId),
+        TransRowId: Number(apLine.Line_ID),
+        ReconcileAmount: useRecon,
+        CreditOrDebit: "codDebit"
+      });
+      remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
+    }
+
+    const totalMatchedOnAp = Number((Math.min(Number(jeAmt || openJeCred), openJeCred) - remainingToRecon).toFixed(2));
+    if (totalMatchedOnAp > 0 && reconRows.length > 0) {
+      reconRows.push({
+        ShortName: "370001",
+        TransId: Number(jeLine.TransId),
+        TransRowId: Number(jeLine.Line_ID),
+        ReconcileAmount: totalMatchedOnAp,
+        CreditOrDebit: "codCredit"
+      });
+
+      const finalReconDate = reconDate || new Date().toISOString().split("T")[0];
+      try {
+        await serviceLayer.post("/InternalReconciliations", {
+          CardOrAccount: "coaAccount",
+          ReconDate: finalReconDate,
+          InternalReconciliationOpenTransRows: reconRows
+        });
+      } catch (slErr1) {
+        // Retry without CreditOrDebit property in case B1 version infers it from JDT1
+        const strippedRows = reconRows.map(({ CreditOrDebit, ...rest }) => rest);
+        await serviceLayer.post("/InternalReconciliations", {
+          CardOrAccount: "coaAccount",
+          ReconDate: finalReconDate,
+          InternalReconciliationOpenTransRows: strippedRows
+        });
+      }
+
+      reconStatus.reconciled = true;
+      reconStatus.message = `Reconciled ₹${totalMatchedOnAp.toLocaleString("en-IN")} on G/L 370001 against A/P Invoice(s) in SAP!`;
+    } else {
+      reconStatus.message = "Could not match open A/P Invoice debit amount for reconciliation.";
+    }
+  } catch (rErr) {
+    reconStatus.message = `Reconciliation note: ${rErr.message}`;
+  }
+  return reconStatus;
+}
 
 // --- 10. POST /api/rodtep/post-grpo-je: Post Custom Duty <-> RoDTEP 370001 JE & Reconcile with AP Invoice ---
 router.post("/post-grpo-je", async (req, res) => {
@@ -1109,12 +1312,14 @@ router.post("/post-grpo-je", async (req, res) => {
       jeDate = new Date().toISOString().split("T")[0],
       amount = 0,
       customDutyCode = "V00040",
-      customDutyAccountType = "BP", // "BP" (ShortName e.g. V00040) or "GL" (AccountCode e.g. 520053)
-      jeDirection = "CREDIT_370001_DEBIT_DUTY", // "CREDIT_370001_DEBIT_DUTY" or "DEBIT_370001_CREDIT_DUTY"
+      customDutyAccountType = "BP",
+      jeDirection = "CREDIT_370001_DEBIT_DUTY",
       memo = "",
       reconcileWithAp = true,
-      reconcileApDocEntries = [], // optional array of APDocEntry numbers to reconcile against
-      apReconBreakdown = [] // [{ apDocEntry, apDocNum, numAtCard, amount }]
+      apReconBreakdown = [],
+      reconcileOnlyExistingJe = false,
+      existingJeNum = null,
+      existingJeTransId = null
     } = req.body;
 
     const jeAmt = Number(Number(amount || 0).toFixed(2));
@@ -1123,10 +1328,7 @@ router.post("/post-grpo-je", async (req, res) => {
     }
 
     const cleanDutyCode = String(customDutyCode || "V00040").trim();
-    const isBp =
-      customDutyAccountType === "BP" ||
-      /^[VC]/i.test(cleanDutyCode);
-
+    const isBp = customDutyAccountType === "BP" || /^[VC]/i.test(cleanDutyCode);
     const finalDate = parseExcelDateToIso(jeDate) || new Date().toISOString().split("T")[0];
     const finalMemo =
       String(memo || "").trim() ||
@@ -1134,165 +1336,124 @@ router.post("/post-grpo-je", async (req, res) => {
         ? `BCD of BOE No ${boeNo}`
         : `BCD of BL ${blNo || ""}${grpoDocNum ? " GRPO #" + grpoDocNum : ""}`).slice(0, 50);
 
-    const dutyLine = isBp
-      ? { ShortName: cleanDutyCode, LineMemo: finalMemo }
-      : { AccountCode: cleanDutyCode, LineMemo: finalMemo };
+    let jdtNum = existingJeNum || null;
+    let transId = existingJeTransId || null;
+    let alreadyExistedInSap = false;
 
-    const rodtepLine = {
-      AccountCode: "370001",
-      LineMemo: finalMemo
-    };
-
-    if (jeDirection === "DEBIT_370001_CREDIT_DUTY") {
-      rodtepLine.Debit = jeAmt;
-      rodtepLine.Credit = 0;
-      dutyLine.Debit = 0;
-      dutyLine.Credit = jeAmt;
-    } else {
-      // Standard SAP BOE Duty utilization: Debit Custom Duty (V00040 / 520053), Credit RoDTEP 370001
-      dutyLine.Debit = jeAmt;
-      dutyLine.Credit = 0;
-      rodtepLine.Debit = 0;
-      rodtepLine.Credit = jeAmt;
-    }
-
-    const ref2Str =
-      (apReconBreakdown || [])
-        .map((x) => x.numAtCard || (x.apDocNum ? "AP#" + x.apDocNum : ""))
-        .filter(Boolean)
-        .join(", ")
-        .slice(0, 100) || (grpoDocNum ? "GRPO#" + String(grpoDocNum) : "");
-
-    dutyLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
-    dutyLine.Reference2 = ref2Str;
-    rodtepLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
-    rodtepLine.Reference2 = ref2Str;
-
-    const jePayload = {
-      ReferenceDate: finalDate,
-      DueDate: finalDate,
-      TaxDate: finalDate,
-      Memo: finalMemo,
-      Reference: String(boeNo || blNo || "").slice(0, 100),
-      Reference2: ref2Str,
-      JournalEntryLines: [dutyLine, rodtepLine]
-    };
-
-    const jeRes = await serviceLayer.post("/JournalEntries", jePayload);
-    const jdtNum = jeRes.JdtNum || jeRes.Number || null;
-    const transId = jeRes.JdtNum || jeRes.TransId || null;
-
-    // Attempt SAP Internal Reconciliation on G/L 370001 if requested and direction credits 370001
-    let reconStatus = { attempted: false, reconciled: false, message: "" };
-    if (reconcileWithAp && jeDirection === "CREDIT_370001_DEBIT_DUTY" && transId) {
-      reconStatus.attempted = true;
+    // SAFETY CHECK: Before creating a new JE, check if a JE for this BL / BOE / GRPO already exists in SAP JDT1!
+    if (!reconcileOnlyExistingJe && !jdtNum && !transId) {
       try {
-        // Find the JDT1 line for the new JE on Account 370001
-        const [jeLineRows] = await db.query(
-          `SELECT "TransId", "Line_ID", CAST("BalDueCred" AS DOUBLE) AS "BalDueCred"
+        const cleanBl = String(blNo || "").trim();
+        const cleanBoe = String(boeNo || "").trim();
+        const [existingJes] = await db.query(
+          `SELECT TOP 1 "TransId", "BaseRef", CAST("Credit" AS DOUBLE) AS "Credit", CAST("Debit" AS DOUBLE) AS "Debit"
            FROM "JDT1"
-           WHERE ("TransId" = ? OR "BaseRef" = ?) AND "Account" = 370001 AND "Credit" > 0`,
-          [Number(transId), String(jdtNum || transId)]
+           WHERE "Account" = '370001'
+             AND "TransType" = '30'
+             AND (
+               (? <> '' AND ("Ref1" = ? OR "LineMemo" LIKE '%' || ? || '%'))
+               OR (? <> '' AND ("Ref1" = ? OR "LineMemo" LIKE '%' || ? || '%'))
+               OR (? > 0 AND "LineMemo" LIKE '%GRPO #' || TO_VARCHAR(?) || '%')
+             )
+           ORDER BY "TransId" DESC`,
+          [cleanBl, cleanBl, cleanBl, cleanBoe, cleanBoe, cleanBoe, Number(grpoDocNum || 0), Number(grpoDocNum || 0)]
         );
-
-        // Find open Debit JDT1 lines on Account 370001 for the linked AP Invoice(s)
-        let apQuery = `
-          SELECT j1."TransId", j1."Line_ID", CAST(j1."BalDueDeb" AS DOUBLE) AS "BalDueDeb", p0."DocEntry", p0."DocNum"
-          FROM "JDT1" j1
-          INNER JOIN "OPCH" p0 ON p0."TransId" = j1."TransId"
-          WHERE j1."Account" = 370001 AND j1."BalDueDeb" > 0 AND p0."CANCELED" = N
-          ORDER BY p0."DocDate" ASC, p0."DocEntry" ASC
-        `;
-        const [openApLines] = await db.query(apQuery);
-
-        if (jeLineRows && jeLineRows.length > 0 && openApLines && openApLines.length > 0) {
-          const jeLine = jeLineRows[0];
-          let remainingToRecon = Math.min(jeAmt, Number(jeLine.BalDueCred || jeAmt));
-          const reconRows = [];
-
-          // Map exact per-AP amounts from attached scrips (apReconBreakdown) first
-          const exactAmtByDocEntry = new Map();
-          const exactAmtByNumAtCard = new Map();
-          for (const item of apReconBreakdown || []) {
-            if (item.apDocEntry && Number(item.amount) > 0) {
-              exactAmtByDocEntry.set(
-                Number(item.apDocEntry),
-                (exactAmtByDocEntry.get(Number(item.apDocEntry)) || 0) + Number(item.amount)
-              );
-            } else if (item.numAtCard && Number(item.amount) > 0) {
-              const k = String(item.numAtCard).trim().toUpperCase();
-              exactAmtByNumAtCard.set(k, (exactAmtByNumAtCard.get(k) || 0) + Number(item.amount));
-            }
-          }
-
-          const usedApTransIds = new Set();
-
-          // Pass 1: Reconcile exact amounts against the specific AP Invoices that the attached scrips belong to
-          for (const apLine of openApLines) {
-            if (remainingToRecon <= 0.01) break;
-            const docEntryNum = Number(apLine.DocEntry);
-            const wantedAmt = exactAmtByDocEntry.get(docEntryNum) || 0;
-            if (wantedAmt <= 0.01) continue;
-            const availDeb = Number(apLine.BalDueDeb || 0);
-            if (availDeb <= 0.01) continue;
-            const useRecon = Number(Math.min(availDeb, wantedAmt, remainingToRecon).toFixed(2));
-            if (useRecon > 0) {
-              reconRows.push({
-                ShortName: "370001",
-                TransId: Number(apLine.TransId),
-                TransRowId: Number(apLine.Line_ID),
-                ReconcileAmount: useRecon
-              });
-              usedApTransIds.add(Number(apLine.TransId));
-              remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
-            }
-          }
-
-          // Pass 2: If any amount remains (e.g., scrips were imported without an AP link), fall back to oldest open AP invoices
-          for (const apLine of openApLines) {
-            if (remainingToRecon <= 0.01) break;
-            if (usedApTransIds.has(Number(apLine.TransId))) continue;
-            const availDeb = Number(apLine.BalDueDeb || 0);
-            if (availDeb <= 0.01) continue;
-            const useRecon = Number(Math.min(availDeb, remainingToRecon).toFixed(2));
-            reconRows.push({
-              ShortName: "370001",
-              TransId: Number(apLine.TransId),
-              TransRowId: Number(apLine.Line_ID),
-              ReconcileAmount: useRecon
-            });
-            remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
-          }
-
-          const totalMatchedOnAp = Number((jeAmt - remainingToRecon).toFixed(2));
-          if (totalMatchedOnAp > 0 && reconRows.length > 0) {
-            reconRows.push({
-              ShortName: "370001",
-              TransId: Number(jeLine.TransId),
-              TransRowId: Number(jeLine.Line_ID),
-              ReconcileAmount: totalMatchedOnAp
-            });
-
-            await serviceLayer.post("/InternalReconciliations", {
-              CardOrAccount: "coaAccount",
-              ReconDate: finalDate,
-              InternalReconciliationOpenTransRows: reconRows
-            });
-
-            reconStatus.reconciled = true;
-            reconStatus.message = `Automatically reconciled ₹${totalMatchedOnAp.toLocaleString("en-IN")} on G/L 370001 in SAP!`;
-          }
+        if (existingJes && existingJes.length > 0) {
+          transId = existingJes[0].TransId;
+          jdtNum = existingJes[0].BaseRef || existingJes[0].TransId;
+          alreadyExistedInSap = true;
         }
-      } catch (rErr) {
-        reconStatus.message = `JE Posted (#${jdtNum}). Note on auto-reconciliation: ${rErr.message}`;
-      }
+      } catch (_) {}
     }
 
-    // Update local store utilizations for this GRPO / BL with JENum, JETransId, JEDate, BOENo
+    // Only post a new JE to SAP if one does NOT already exist!
+    if (!alreadyExistedInSap && !reconcileOnlyExistingJe) {
+      const dutyLine = isBp
+        ? { ShortName: cleanDutyCode, LineMemo: finalMemo }
+        : { AccountCode: cleanDutyCode, LineMemo: finalMemo };
+
+      const rodtepLine = {
+        AccountCode: "370001",
+        LineMemo: finalMemo
+      };
+
+      if (jeDirection === "DEBIT_370001_CREDIT_DUTY") {
+        rodtepLine.Debit = jeAmt;
+        rodtepLine.Credit = 0;
+        dutyLine.Debit = 0;
+        dutyLine.Credit = jeAmt;
+      } else {
+        dutyLine.Debit = jeAmt;
+        dutyLine.Credit = 0;
+        rodtepLine.Debit = 0;
+        rodtepLine.Credit = jeAmt;
+      }
+
+      const ref2Str =
+        (apReconBreakdown || [])
+          .map((x) => x.numAtCard || (x.apDocNum ? "AP#" + x.apDocNum : ""))
+          .filter(Boolean)
+          .join(", ")
+          .slice(0, 100) || (grpoDocNum ? "GRPO#" + String(grpoDocNum) : "");
+
+      dutyLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
+      dutyLine.Reference2 = ref2Str;
+      rodtepLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
+      rodtepLine.Reference2 = ref2Str;
+
+      const jePayload = {
+        ReferenceDate: finalDate,
+        DueDate: finalDate,
+        TaxDate: finalDate,
+        Memo: finalMemo,
+        Reference: String(boeNo || blNo || "").slice(0, 100),
+        Reference2: ref2Str,
+        JournalEntryLines: [dutyLine, rodtepLine]
+      };
+
+      const jeRes = await serviceLayer.post("/JournalEntries", jePayload);
+      jdtNum = jeRes.Number || jeRes.JdtNum || null;
+      transId = jeRes.JdtNum || jeRes.TransId || jdtNum;
+    }
+
+    // Run SAP Internal Reconciliation on G/L 370001
+    let reconStatus = { attempted: false, reconciled: false, message: "" };
+    if (reconcileWithAp && (transId || jdtNum)) {
+      reconStatus = await reconcileJeOn370001({
+        transId,
+        jdtNum,
+        jeAmt,
+        reconDate: finalDate,
+        apReconBreakdown
+      });
+    }
+
+    // Save JENum & reconciliation status into HANA BHV_RODTEP_BL.Remarks as well as local store so it persists across restarts
+    const jeTag = `[JE#${jdtNum || transId}${reconStatus.reconciled ? ":RECONCILED" : ""}]`;
+    const canUseHana = await ensureHanaTables();
+    if (canUseHana) {
+      try {
+        if (grpoDocEntry) {
+          await db.execute(
+            `UPDATE "BHV_RODTEP_BL" SET "Remarks" = ? WHERE "GRPODocEntry" = ?`,
+            [jeTag, Number(grpoDocEntry)]
+          );
+        } else if (blNo) {
+          await db.execute(
+            `UPDATE "BHV_RODTEP_BL" SET "Remarks" = ? WHERE "BLNo" = ?`,
+            [jeTag, String(blNo).trim()]
+          );
+        }
+      } catch (_) {}
+    }
+
     const local = readLocalStore();
     local.utilizations = (local.utilizations || []).map((u) => {
       const matchGrpo = grpoDocEntry && Number(u.GRPODocEntry) === Number(grpoDocEntry);
-      const matchBl = blNo && String(u.BLNo || "").trim().toUpperCase() === String(blNo).trim().toUpperCase();
+      const matchBl =
+        !grpoDocEntry &&
+        blNo &&
+        String(u.BLNo || "").trim().toUpperCase() === String(blNo).trim().toUpperCase();
       if (matchGrpo || matchBl) {
         return {
           ...u,
@@ -1302,7 +1463,8 @@ router.post("/post-grpo-je", async (req, res) => {
           JEDate: finalDate,
           JEDirection: jeDirection,
           CustomDutyCode: cleanDutyCode,
-          ReconciledInSAP: reconStatus.reconciled
+          ReconciledInSAP: reconStatus.reconciled,
+          Remarks: jeTag
         };
       }
       return u;
@@ -1311,6 +1473,7 @@ router.post("/post-grpo-je", async (req, res) => {
 
     res.json({
       success: true,
+      alreadyExistedInSap,
       jdtNum,
       transId,
       jeDate: finalDate,
