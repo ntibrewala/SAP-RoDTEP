@@ -153,9 +153,10 @@ router.get("/vendors", async (req, res) => {
 router.get("/ap-invoices", async (req, res) => {
   try {
     const sql = `
-      SELECT TOP 40
+      SELECT TOP 50
         p0."DocEntry",
         p0."DocNum",
+        p0."TransId",
         TO_VARCHAR(p0."DocDate", 'YYYY-MM-DD') AS "DocDate",
         TO_VARCHAR(p0."DocDueDate", 'YYYY-MM-DD') AS "DocDueDate",
         p0."CardCode",
@@ -163,12 +164,15 @@ router.get("/ap-invoices", async (req, res) => {
         p0."NumAtCard",
         CAST(p0."DocTotal" AS DOUBLE) AS "DocTotal",
         CAST(p1."LineTotal" AS DOUBLE) AS "ScripFaceValue",
-        CAST(COALESCE(p2."LineTotal", 0) AS DOUBLE) AS "GainDiscountAmount"
+        CAST(COALESCE(p2."LineTotal", 0) AS DOUBLE) AS "GainDiscountAmount",
+        CAST(COALESCE(j1."BalDueDeb" - j1."BalDueCred", 0) AS DOUBLE) AS "InternalReconPending",
+        CAST(p1."LineTotal" - COALESCE(j1."BalDueDeb" - j1."BalDueCred", 0) AS DOUBLE) AS "ReconciledAmount"
       FROM "OPCH" p0
       INNER JOIN "PCH1" p1 ON p0."DocEntry" = p1."DocEntry" AND p1."AcctCode" = '370001'
       LEFT JOIN "PCH1" p2 ON p0."DocEntry" = p2."DocEntry" AND p2."AcctCode" = '410023'
+      LEFT JOIN "JDT1" j1 ON p0."TransId" = j1."TransId" AND j1."Account" = '370001'
       WHERE p0."CANCELED" = 'N'
-      ORDER BY p0."DocEntry" DESC
+      ORDER BY CASE WHEN COALESCE(j1."BalDueDeb" - j1."BalDueCred", 0) > 0 THEN 0 ELSE 1 END ASC, p0."DocEntry" DESC
     `;
     const [rows] = await db.query(sql);
     res.json(rows || []);
@@ -357,9 +361,44 @@ router.get("/scrips", async (req, res) => {
       utilRows = (local.utilizations || []).slice().reverse();
     }
 
+    let glReconPendingRows = [];
+    let glReconPendingTotal = 0;
+    try {
+      const [jRows] = await db.query(`
+        SELECT
+          j1."TransId",
+          j1."Line_ID",
+          j1."TransType",
+          j1."BaseRef",
+          TO_VARCHAR(j1."RefDate", 'YYYY-MM-DD') AS "RefDate",
+          CAST(j1."Debit" AS DOUBLE) AS "OriginalDebit",
+          CAST(j1."Credit" AS DOUBLE) AS "OriginalCredit",
+          CAST(j1."BalDueDeb" - j1."BalDueCred" AS DOUBLE) AS "PendingReconBalance",
+          CAST((j1."Debit" - j1."Credit") - (j1."BalDueDeb" - j1."BalDueCred") AS DOUBLE) AS "ReconciledAmount",
+          p0."DocEntry" AS "APDocEntry",
+          p0."DocNum" AS "APDocNum",
+          COALESCE(p0."CardCode", j1."ContraAct", '') AS "CardCode",
+          COALESCE(p0."CardName", j1."LineMemo", '') AS "CardName",
+          COALESCE(p0."NumAtCard", j1."Ref2", '') AS "NumAtCard"
+        FROM "JDT1" j1
+        LEFT JOIN "OPCH" p0 ON j1."TransType" = '18' AND p0."TransId" = j1."TransId"
+        WHERE j1."Account" = '370001'
+          AND (j1."BalDueDeb" <> 0 OR j1."BalDueCred" <> 0)
+        ORDER BY j1."RefDate" ASC, j1."TransId" ASC
+      `);
+      glReconPendingRows = jRows || [];
+      glReconPendingTotal = Number(
+        glReconPendingRows.reduce((sum, r) => sum + Number(r.PendingReconBalance || 0), 0).toFixed(2)
+      );
+    } catch (jErr) {
+      console.warn("[RoDTEP] Failed to query JDT1 370001 internal recon pending:", jErr.message);
+    }
+
     res.json({
       scrips: scripsRows,
-      utilizations: utilRows
+      utilizations: utilRows,
+      glReconPendingRows,
+      glReconPendingTotal
     });
   } catch (err) {
     console.error("[RoDTEP] GET /scrips error:", err.message);

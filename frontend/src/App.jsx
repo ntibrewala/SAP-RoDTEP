@@ -241,6 +241,8 @@ export default function App() {
   const [hbls, setHbls] = useState([]);
   const [scrips, setScrips] = useState([]);
   const [utilizations, setUtilizations] = useState([]);
+  const [glReconPendingRows, setGlReconPendingRows] = useState([]);
+  const [glReconPendingTotal, setGlReconPendingTotal] = useState(0);
 
   // --- MODULE 1 STATE (Excel Paste -> Auto-Create AP Invoice) ---
   const [apMode, setApMode] = useState("CREATE_AP"); // "CREATE_AP" or "LINK_EXISTING"
@@ -284,6 +286,8 @@ export default function App() {
       setHbls(grpoRes.data?.hbls || []);
       setScrips(scripRes.data?.scrips || []);
       setUtilizations(scripRes.data?.utilizations || []);
+      setGlReconPendingRows(scripRes.data?.glReconPendingRows || []);
+      setGlReconPendingTotal(Number(scripRes.data?.glReconPendingTotal || 0));
     } catch (err) {
       console.error("Failed to load RoDTEP data:", err);
       setBanner({
@@ -790,36 +794,48 @@ export default function App() {
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Global Live Balance KPI Strip */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div className="rp-card p-3.5">
-            <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b6863]">
-              Total Scrips Purchased
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          <div className="rp-card p-3.5 border-l-4 border-l-[#c8102e]">
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#c8102e]">
+              G/L 370001 Recon Pending
             </div>
-            <div className="text-[17px] font-extrabold font-mono-code text-[#1a1a1a] mt-1">
-              ₹{formatINR(globalKpis.totalPurchased)}
+            <div className="text-[16.5px] font-extrabold font-mono-code text-[#1a1a1a] mt-1">
+              ₹{formatINR(glReconPendingTotal)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
-              {globalKpis.scripCount} Licences in Table 1
+              {glReconPendingRows.length} Open AP Invoices in SAP
             </div>
           </div>
 
           <div className="rp-card p-3.5">
-            <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b6863]">
-              Utilized on BL / BOE (On-The-Fly)
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#6b6863]">
+              Scrips Entered (Table 1)
             </div>
-            <div className="text-[17px] font-extrabold font-mono-code text-amber-700 mt-1">
+            <div className="text-[16.5px] font-extrabold font-mono-code text-[#1a1a1a] mt-1">
+              ₹{formatINR(globalKpis.totalPurchased)}
+            </div>
+            <div className="text-[10.5px] text-[#8a8780] mt-0.5">
+              {globalKpis.scripCount} Licences Captured
+            </div>
+          </div>
+
+          <div className="rp-card p-3.5">
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#6b6863]">
+              Utilized on BL / BOE
+            </div>
+            <div className="text-[16.5px] font-extrabold font-mono-code text-amber-700 mt-1">
               ₹{formatINR(globalKpis.totalUtilized)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
-              {utilizations.length} BL Allocation rows
+              {utilizations.length} BL Allocations (On-The-Fly)
             </div>
           </div>
 
           <div className="rp-card p-3.5 border-l-4 border-l-emerald-600">
-            <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-emerald-800">
-              Total Net Available Balance
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-emerald-800">
+              Net Scrip Balance
             </div>
-            <div className="text-[17px] font-extrabold font-mono-code text-emerald-700 mt-1">
+            <div className="text-[16.5px] font-extrabold font-mono-code text-emerald-700 mt-1">
               ₹{formatINR(globalKpis.totalBalance)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
@@ -828,10 +844,10 @@ export default function App() {
           </div>
 
           <div className="rp-card p-3.5 border-l-4 border-l-blue-600">
-            <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-blue-800">
-              Mundra Port Pending
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-blue-800">
+              Mundra Port Balance
             </div>
-            <div className="text-[17px] font-extrabold font-mono-code text-blue-700 mt-1">
+            <div className="text-[16.5px] font-extrabold font-mono-code text-blue-700 mt-1">
               ₹{formatINR(globalKpis.mundraBalance)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
@@ -840,10 +856,10 @@ export default function App() {
           </div>
 
           <div className="rp-card p-3.5 border-l-4 border-l-purple-600">
-            <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-purple-800">
-              Chennai Port Pending
+            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-purple-800">
+              Chennai Port Balance
             </div>
-            <div className="text-[17px] font-extrabold font-mono-code text-purple-700 mt-1">
+            <div className="text-[16.5px] font-extrabold font-mono-code text-purple-700 mt-1">
               ₹{formatINR(globalKpis.chennaiBalance)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
@@ -879,6 +895,95 @@ export default function App() {
         {/* ===================================================================== */}
         {activeTab === "module1" && (
           <form onSubmit={handleSubmitModule1} className="space-y-6">
+            {/* Live G/L 370001 Internal Reconciliation Pending Table from SAP JDT1 */}
+            <div className="rp-card p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/[0.08] pb-3">
+                <div>
+                  <span className="sec-label">SAP HANA Live · JDT1 (Account 370001 - RODTEP Scrip Account)</span>
+                  <h3 className="text-[15px] font-extrabold text-[#1a1a1a]">
+                    Internal Reconciliation Pending A/P Invoices (Total Pending: ₹{formatINR(glReconPendingTotal)})
+                  </h3>
+                </div>
+                <span className="text-[11px] font-mono-code text-[#6b6863]">
+                  Click "Link Scrips" on any pending invoice to attach its Excel scrip breakup
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-[12px]">
+                  <thead className="bg-[#f4f2ef] border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
+                    <tr>
+                      <th className="py-2 px-3">AP #</th>
+                      <th className="py-2 px-3">Date</th>
+                      <th className="py-2 px-3">Vendor</th>
+                      <th className="py-2 px-3">Vendor Ref (NumAtCard)</th>
+                      <th className="py-2 px-3 text-right">Original 370001 Debit</th>
+                      <th className="py-2 px-3 text-right">Internally Reconciled</th>
+                      <th className="py-2 px-3 text-right">Pending for Recon (BalDueDeb)</th>
+                      <th className="py-2 px-3 text-right">Scrips Entered</th>
+                      <th className="py-2 px-3 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-black/[0.06] bg-white">
+                    {glReconPendingRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-4 px-3 text-center text-[#888]">
+                          No unreconciled lines found on G/L 370001.
+                        </td>
+                      </tr>
+                    ) : (
+                      glReconPendingRows.map((r) => {
+                        const enteredForAp = scrips
+                          .filter((s) => Number(s.APDocEntry) === Number(r.APDocEntry) || Number(s.APDocNum) === Number(r.APDocNum))
+                          .reduce((sum, s) => sum + Number(s.ScripAmount || 0), 0);
+                        return (
+                          <tr key={`${r.TransId}-${r.Line_ID}`} className="hover:bg-[#faf9f7]">
+                            <td className="py-2 px-3 font-mono-code font-bold text-[#c8102e]">
+                              #{r.APDocNum || r.BaseRef}
+                            </td>
+                            <td className="py-2 px-3 font-mono-code">{r.RefDate}</td>
+                            <td className="py-2 px-3 font-medium">
+                              {r.CardName} <span className="text-[11px] text-[#777]">({r.CardCode})</span>
+                            </td>
+                            <td className="py-2 px-3 font-mono-code">{r.NumAtCard || "-"}</td>
+                            <td className="py-2 px-3 text-right font-mono-code">
+                              ₹{formatINR(r.OriginalDebit)}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono-code text-[#666]">
+                              ₹{formatINR(r.ReconciledAmount)}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono-code font-bold text-emerald-700">
+                              ₹{formatINR(r.PendingReconBalance)}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono-code">
+                              {enteredForAp > 0 ? (
+                                <span className="text-blue-700 font-bold">₹{formatINR(enteredForAp)}</span>
+                              ) : (
+                                <span className="text-[#999]">₹0.00</span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              {r.APDocEntry && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setApMode("LINK_EXISTING");
+                                    handleSelectExistingAp(String(r.APDocEntry));
+                                  }}
+                                  className="px-2.5 py-1 bg-[#1a1a1a] hover:bg-[#c8102e] text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                >
+                                  Link Scrips
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
             <div className="rp-card p-6 space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-black/[0.08] pb-4">
                 <div>
@@ -930,7 +1035,7 @@ export default function App() {
                       {apInvoices.map((inv) => (
                         <option key={inv.DocEntry} value={inv.DocEntry}>
                           #{inv.DocNum} | {inv.DocDate} | {inv.CardName} ({inv.CardCode}) | Ref:{" "}
-                          {inv.NumAtCard || "-"} | Scrip 370001: ₹{formatINR(inv.ScripFaceValue)}
+                          {inv.NumAtCard || "-"} | Orig: ₹{formatINR(inv.ScripFaceValue)} | Pending Recon: ₹{formatINR(inv.InternalReconPending)}
                         </option>
                       ))}
                     </select>
