@@ -38,33 +38,33 @@ async function apiRequest(method, endpoint, data = undefined) {
 }
 
 const SAMPLE_EXCEL_TSV = `EXPORTER,LIC NO,DATED,SCHEME,PORT CODE,  SCRIP AMOUNT  ,
-THE PARADISE LINEN,2610023656,22.10.2026,ROSCTL,INMAA1,298820,Chennai
-STR GARMENTS,2611005776,05.11.2026,ROSCTL,INTUT6,291326,Chennai
-STR GARMENTS,2611005714,05.11.2026,ROSCTL,INMAA1,248477,Chennai
-VKS HYTECH PRIVATE LIMITED,2608030729,14.08.2026,RODTEP,INDEL4,208634,Mundra
-VISHNU ENTERPRISES,2611009820,06.11.2026,ROSCTL,INCOK1,205502,Mundra
-PAKIZA FASHION POINT,2611010269,07.11.2026,ROSCTL,INNSA1,184981,Mundra
-SIDDHRAJ CHEMICALS LLP,2611001420,03.11.2026,RODTEP,INHZA1,128933,Mundra
-MAULIK LEATHERCRAFTS PRIVATE LIMITED,2611002219,05.11.2026,RODTEP,INMAA4,125964,Mundra
-VISHNU ENTERPRISES,2611009819,06.11.2026,RODTEP,INCOK1,113853,Mundra
-STR GARMENTS,2611005755,05.11.2026,ROSCTL,INMAA4,113794,Mundra
-STR GARMENTS,2611005594,05.11.2026,ROSCTL,INCOK1,89189,Chennai
-NEW INDIA EXIM,2609024500,12.09.2026,RODTEP,INSBI6,68698,Mundra
-VISHNU ENTERPRISES,2611001974,04.11.2026,RODTEP,INCOK1,59148,Mundra
-SHREE VANI TRADING CO,2604178808,29.04.2026,RODTEP,INNSA1,57729,Mundra
-PAKIZA FASHION POINT,2611010268,07.11.2026,RODTEP,INNSA1,56182,Mundra
-SIDDHRAJ CHEMICALS LLP,2611001446,03.11.2026,RODTEP,INMUN1,50900,Mundra
-ESSCO INTERNATIONAL,2610047851,31.10.2026,RODTEP,INNSA1,42699,Mundra
-STR GARMENTS,2611005985,05.11.2026,ROSCTL,INBLR4,40187,Chennai
-M.B.INTERNATIONAL,2611000122,02.11.2026,RODTEP,INMUN1,33335,Mundra
-MAULIK LEATHERCRAFTS PRIVATE LIMITED,2611002249,05.11.2026,ROSCTL,INMAA4,29794,Mundra
-ILEX ODYSSEY LLP,2611001396,03.11.2026,RODTEP,INCOK1,29085,Mundra
-NEW INDIA EXIM,2606045474,24.06.2026,RODTEP,INMUN1,25495,Mundra
-SARITA HANDA EXPORTS PRIVATE LIMITED,2610047266,30.10.2026,RODTEP,INBOM4,19846,Mundra
-THE PARADISE LINEN,2611007929,05.11.2026,ROSCTL,INMAA1,9840,Chennai
-SIDDHRAJ CHEMICALS LLP,2611001442,03.11.2026,RODTEP,INNSA1,9324,Mundra
-MOHAN MOTORS,2610046108,29.10.2026,RODTEP,INWFD6,5056,Mundra
-BELIEVE COSMETICS PRIVATE LIMITED,2504000070,01.04.2025,RODTEP,INNSA1,5003,Mundra
+THE PARADISE LINEN,2610023656,22.10.2026,ROSCTL,INMAA1,298820
+STR GARMENTS,2611005776,05.11.2026,ROSCTL,INTUT6,291326
+STR GARMENTS,2611005714,05.11.2026,ROSCTL,INMAA1,248477
+VKS HYTECH PRIVATE LIMITED,2608030729,14.08.2026,RODTEP,INDEL4,208634
+VISHNU ENTERPRISES,2611009820,06.11.2026,ROSCTL,INCOK1,205502
+PAKIZA FASHION POINT,2611010269,07.11.2026,ROSCTL,INNSA1,184981
+SIDDHRAJ CHEMICALS LLP,2611001420,03.11.2026,RODTEP,INHZA1,128933
+MAULIK LEATHERCRAFTS PRIVATE LIMITED,2611002219,05.11.2026,RODTEP,INMAA4,125964
+VISHNU ENTERPRISES,2611009819,06.11.2026,RODTEP,INCOK1,113853
+STR GARMENTS,2611005755,05.11.2026,ROSCTL,INMAA4,113794
+STR GARMENTS,2611005594,05.11.2026,ROSCTL,INCOK1,89189
+NEW INDIA EXIM,2609024500,12.09.2026,RODTEP,INSBI6,68698
+VISHNU ENTERPRISES,2611001974,04.11.2026,RODTEP,INCOK1,59148
+SHREE VANI TRADING CO,2604178808,29.04.2026,RODTEP,INNSA1,57729
+PAKIZA FASHION POINT,2611010268,07.11.2026,RODTEP,INNSA1,56182
+SIDDHRAJ CHEMICALS LLP,2611001446,03.11.2026,RODTEP,INMUN1,50900
+ESSCO INTERNATIONAL,2610047851,31.10.2026,RODTEP,INNSA1,42699
+STR GARMENTS,2611005985,05.11.2026,ROSCTL,INBLR4,40187
+M.B.INTERNATIONAL,2611000122,02.11.2026,RODTEP,INMUN1,33335
+MAULIK LEATHERCRAFTS PRIVATE LIMITED,2611002249,05.11.2026,ROSCTL,INMAA4,29794
+ILEX ODYSSEY LLP,2611001396,03.11.2026,RODTEP,INCOK1,29085
+NEW INDIA EXIM,2606045474,24.06.2026,RODTEP,INMUN1,25495
+SARITA HANDA EXPORTS PRIVATE LIMITED,2610047266,30.10.2026,RODTEP,INBOM4,19846
+THE PARADISE LINEN,2611007929,05.11.2026,ROSCTL,INMAA1,9840
+SIDDHRAJ CHEMICALS LLP,2611001442,03.11.2026,RODTEP,INNSA1,9324
+MOHAN MOTORS,2610046108,29.10.2026,RODTEP,INWFD6,5056
+BELIEVE COSMETICS PRIVATE LIMITED,2504000070,01.04.2025,RODTEP,INNSA1,5003
 ,,,,,2551794,`;
 
 function formatINR(val) {
@@ -517,17 +517,10 @@ export default function App() {
   const displayedPendingScrips = useMemo(() => {
     const q = module2Search.trim().toLowerCase();
     const filtered = pendingScrips.filter((s) => {
-      if (
-        portViewMode === "ONLY_MATCHING_PORT" &&
-        String(s.PortLocation || "").toUpperCase() !== selectedPort.toUpperCase()
-      ) {
-        return false;
-      }
       if (!q) return true;
       return (
         String(s.LicNo || "").toLowerCase().includes(q) ||
         String(s.ExporterName || "").toLowerCase().includes(q) ||
-        String(s.PortLocation || "").toLowerCase().includes(q) ||
         String(s.PortCode || "").toLowerCase().includes(q) ||
         String(s.Scheme || "").toLowerCase().includes(q) ||
         String(s.APDocNum || "").toLowerCase().includes(q) ||
@@ -537,20 +530,12 @@ export default function App() {
       );
     });
 
-    return [...filtered].sort((a, b) => {
-      const aMatch =
-        String(a.PortLocation || "").toUpperCase() === selectedPort.toUpperCase() ? 0 : 1;
-      const bMatch =
-        String(b.PortLocation || "").toUpperCase() === selectedPort.toUpperCase() ? 0 : 1;
-      if (aMatch !== bMatch) return aMatch - bMatch;
-      return String(a.LicDate || "").localeCompare(String(b.LicDate || ""));
-    });
-  }, [pendingScrips, portViewMode, selectedPort, module2Search]);
+    return [...filtered].sort((a, b) =>
+      String(a.LicDate || "").localeCompare(String(b.LicDate || ""))
+    );
+  }, [pendingScrips, module2Search]);
 
   const handleToggleScripCheckbox = (scrip) => {
-    const isPortMatch =
-      String(scrip.PortLocation || "").toUpperCase() === selectedPort.toUpperCase();
-    if (!isPortMatch) return; // Strictly locked if port doesn't match
 
     setCheckedScrips((prev) => {
       const next = { ...prev };
@@ -700,7 +685,7 @@ export default function App() {
       const res = await apiRequest("POST", "/allocate-bl", payload);
       setBanner({
         type: "success",
-        text: `Attached ${res.data.count} RoDTEP scrip(s) totaling ₹${formatINR(res.data.totalAllocated)} to BL ${res.data.blNo}${res.data.grpoDocNum ? ` (GRPO #${res.data.grpoDocNum})` : ""} for Port ${res.data.portLocation}!`
+        text: `Attached ${res.data.count} RoDTEP scrip(s) totaling ₹${formatINR(res.data.totalAllocated)} to BL ${res.data.blNo}${res.data.grpoDocNum ? ` (GRPO #${res.data.grpoDocNum})` : ""} !`
       });
 
       setCheckedScrips({});
@@ -848,12 +833,12 @@ export default function App() {
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Global Live Balance KPI Strip */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="rp-card p-3.5 border-l-4 border-l-[#c8102e]">
             <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#c8102e]">
               G/L 370001 Recon Pending
             </div>
-            <div className="text-[16.5px] font-extrabold font-mono-code text-[#1a1a1a] mt-1">
+            <div className="text-[17px] font-extrabold font-mono-code text-[#1a1a1a] mt-1">
               ₹{formatINR(glReconPendingTotal)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
@@ -865,7 +850,7 @@ export default function App() {
             <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#6b6863]">
               Scrips Entered (Table 1)
             </div>
-            <div className="text-[16.5px] font-extrabold font-mono-code text-[#1a1a1a] mt-1">
+            <div className="text-[17px] font-extrabold font-mono-code text-[#1a1a1a] mt-1">
               ₹{formatINR(globalKpis.totalPurchased)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
@@ -875,49 +860,25 @@ export default function App() {
 
           <div className="rp-card p-3.5">
             <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#6b6863]">
-              Utilized on BL / BOE
+              Utilized on BL / BOE (On-The-Fly)
             </div>
-            <div className="text-[16.5px] font-extrabold font-mono-code text-amber-700 mt-1">
+            <div className="text-[17px] font-extrabold font-mono-code text-amber-700 mt-1">
               ₹{formatINR(globalKpis.totalUtilized)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
-              {utilizations.length} BL Allocations (On-The-Fly)
+              {utilizations.length} BL Allocations
             </div>
           </div>
 
           <div className="rp-card p-3.5 border-l-4 border-l-emerald-600">
             <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-emerald-800">
-              Net Scrip Balance
+              Net Available Scrip Balance
             </div>
-            <div className="text-[16.5px] font-extrabold font-mono-code text-emerald-700 mt-1">
+            <div className="text-[17px] font-extrabold font-mono-code text-emerald-700 mt-1">
               ₹{formatINR(globalKpis.totalBalance)}
             </div>
             <div className="text-[10.5px] text-[#8a8780] mt-0.5">
-              {globalKpis.pendingCount} Pending Scrips
-            </div>
-          </div>
-
-          <div className="rp-card p-3.5 border-l-4 border-l-blue-600">
-            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-blue-800">
-              Mundra Port Balance
-            </div>
-            <div className="text-[16.5px] font-extrabold font-mono-code text-blue-700 mt-1">
-              ₹{formatINR(globalKpis.mundraBalance)}
-            </div>
-            <div className="text-[10.5px] text-[#8a8780] mt-0.5">
-              Available for Mundra BLs
-            </div>
-          </div>
-
-          <div className="rp-card p-3.5 border-l-4 border-l-purple-600">
-            <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-purple-800">
-              Chennai Port Balance
-            </div>
-            <div className="text-[16.5px] font-extrabold font-mono-code text-purple-700 mt-1">
-              ₹{formatINR(globalKpis.chennaiBalance)}
-            </div>
-            <div className="text-[10.5px] text-[#8a8780] mt-0.5">
-              Available for Chennai BLs
+              {globalKpis.pendingCount} Pending Scrips Available
             </div>
           </div>
         </div>
@@ -1277,7 +1238,7 @@ export default function App() {
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-[#444]">
-                    Copy &amp; Paste from Excel (EXPORTER | LIC NO | DATED | SCHEME | PORT CODE | SCRIP AMOUNT | Port)
+                    Copy &amp; Paste from Excel (EXPORTER | LIC NO | DATED | SCHEME | PORT CODE | SCRIP AMOUNT)
                   </label>
                   <div className="flex items-center gap-2">
                     <button
@@ -1315,7 +1276,7 @@ export default function App() {
               {pastedScrips.length > 0 && (
                 <div className="space-y-4">
                   {/* Summary Bar */}
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 bg-[#1c1c1c] text-white p-4 rounded-[6px]">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-[#1c1c1c] text-white p-4 rounded-[6px]">
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-gray-400">
                         Line 1 · G/L 370001 (Face Value)
@@ -1345,24 +1306,6 @@ export default function App() {
                       </div>
                       <div className="text-[10px] text-gray-400">Series 239 (Service)</div>
                     </div>
-
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-blue-300">
-                        Mundra Scrips ({pastedSummary.mundraCount})
-                      </div>
-                      <div className="text-[15px] font-bold font-mono-code text-blue-300 mt-0.5">
-                        ₹{formatINR(pastedSummary.mundraTotal)}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-purple-300">
-                        Chennai Scrips ({pastedSummary.chennaiCount})
-                      </div>
-                      <div className="text-[15px] font-bold font-mono-code text-purple-300 mt-0.5">
-                        ₹{formatINR(pastedSummary.chennaiTotal)}
-                      </div>
-                    </div>
                   </div>
 
                   {/* Table */}
@@ -1377,7 +1320,6 @@ export default function App() {
                           <th className="py-2.5 px-3">Scheme</th>
                           <th className="py-2.5 px-3">Port Code</th>
                           <th className="py-2.5 px-3 text-right">Scrip Amount (₹)</th>
-                          <th className="py-2.5 px-3">Port Location</th>
                           <th className="py-2.5 px-3">SAP AP # (Optional / Later)</th>
                           <th className="py-2.5 px-3 text-center">Del</th>
                         </tr>
@@ -1438,22 +1380,6 @@ export default function App() {
                                   }
                                   className="w-28 px-2 py-1 text-right border border-black/15 rounded font-mono-code font-bold text-[12px]"
                                 />
-                              </td>
-                              <td className="py-2 px-3">
-                                <select
-                                  value={row.PortLocation}
-                                  onChange={(e) =>
-                                    handleUpdatePastedRow(idx, "PortLocation", e.target.value)
-                                  }
-                                  className={`px-2 py-1 rounded text-[11px] font-bold border ${
-                                    String(row.PortLocation).toUpperCase() === "CHENNAI"
-                                      ? "bg-purple-50 text-purple-800 border-purple-200"
-                                      : "bg-blue-50 text-blue-800 border-blue-200"
-                                  }`}
-                                >
-                                  <option value="Mundra">Mundra</option>
-                                  <option value="Chennai">Chennai</option>
-                                </select>
                               </td>
                               <td className="py-2 px-3">
                                 <select
@@ -1538,38 +1464,14 @@ export default function App() {
                   </h2>
                 </div>
 
-                {/* Port Filter / Lock Mode Toggle */}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setPortViewMode("SHOW_ALL_LOCK_OTHER")}
-                    className={`px-3 py-1.5 rounded text-[11px] font-bold uppercase cursor-pointer ${
-                      portViewMode === "SHOW_ALL_LOCK_OTHER"
-                        ? "bg-[#1a1a1a] text-white"
-                        : "bg-[#f4f2ef] text-[#555]"
-                    }`}
-                  >
-                    Show All Pending (Lock Other Port)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPortViewMode("ONLY_MATCHING_PORT")}
-                    className={`px-3 py-1.5 rounded text-[11px] font-bold uppercase cursor-pointer ${
-                      portViewMode === "ONLY_MATCHING_PORT"
-                        ? "bg-[#1a1a1a] text-white"
-                        : "bg-[#f4f2ef] text-[#555]"
-                    }`}
-                  >
-                    Show Only {selectedPort} Scrips
-                  </button>
-                </div>
+
               </div>
 
-              {/* Main Header Form: GRPO Selection, BL Number, Port, Draft BOE Amount */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 bg-[#f4f2ef]/80 p-4 rounded-[6px] border border-black/[0.08]">
-                <div className="lg:col-span-2">
+              {/* Main Header Form: GRPO Selection, BL Number, Draft BOE Amount */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#f4f2ef]/80 p-4 rounded-[6px] border border-black/[0.08]">
+                <div className="md:col-span-2">
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                    1. Select Import GRPO (Captures GRPO # &amp; Auto-Picks BL / Port)
+                    1. Select Import GRPO (Captures GRPO # &amp; Auto-Picks BL)
                   </label>
                   <select
                     value={selectedGrpoDocEntry}
@@ -1579,7 +1481,7 @@ export default function App() {
                     <option value="">-- Optional: Select Import GRPO (or enter BL manually) --</option>
                     {grpos.map((g) => (
                       <option key={g.GRPODocEntry} value={g.GRPODocEntry}>
-                        GRPO #{g.GRPODocNum} | BL: {g.BLNo || "N/A"} | Port: {g.DetectedPort} |{" "}
+                        GRPO #{g.GRPODocNum} | BL: {g.BLNo || "N/A"} |{" "}
                         {g.BOENo ? `BOE: ${g.BOENo}` : "BOE Pending (Draft)"} | {g.CardName}
                       </option>
                     ))}
@@ -1600,12 +1502,9 @@ export default function App() {
                       const matchedHbl = hbls.find(
                         (h) => String(h.BLNo).toUpperCase() === val.trim().toUpperCase()
                       );
-                      if (matchedHbl) {
-                        if (matchedHbl.DetectedPort) handlePortChange(matchedHbl.DetectedPort);
-                        if (matchedHbl.GRPODocEntry) {
-                          setSelectedGrpoDocEntry(String(matchedHbl.GRPODocEntry));
-                          setSelectedGrpoDocNum(String(matchedHbl.GRPODocNum || ""));
-                        }
+                      if (matchedHbl && matchedHbl.GRPODocEntry) {
+                        setSelectedGrpoDocEntry(String(matchedHbl.GRPODocEntry));
+                        setSelectedGrpoDocNum(String(matchedHbl.GRPODocNum || ""));
                       }
                     }}
                     placeholder="Enter or pick BL No..."
@@ -1615,8 +1514,7 @@ export default function App() {
                   <datalist id="sap-hbl-list">
                     {hbls.map((h) => (
                       <option key={h.HBLDocEntry} value={h.BLNo}>
-                        {h.DetectedPort ? `Port: ${h.DetectedPort}` : ""}{" "}
-                        {h.GRPODocNum ? `| GRPO #${h.GRPODocNum}` : ""}
+                        {h.GRPODocNum ? `GRPO #${h.GRPODocNum}` : ""} {h.CardName || ""}
                       </option>
                     ))}
                   </datalist>
@@ -1624,25 +1522,7 @@ export default function App() {
 
                 <div>
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                    3. Port * (Locks Other Port)
-                  </label>
-                  <select
-                    value={selectedPort}
-                    onChange={(e) => handlePortChange(e.target.value)}
-                    className={`w-full px-3 py-2 rounded-[4px] text-[13px] font-extrabold border ${
-                      selectedPort === "Chennai"
-                        ? "bg-purple-50 text-purple-900 border-purple-300"
-                        : "bg-blue-50 text-blue-900 border-blue-300"
-                    }`}
-                  >
-                    <option value="Mundra">Mundra</option>
-                    <option value="Chennai">Chennai</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                    4. Draft BOE / Duty Amount (₹) *
+                    3. Draft BOE / Duty Amount (₹) *
                   </label>
                   <div className="flex gap-1.5">
                     <input
@@ -1677,10 +1557,10 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-6">
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-gray-400">
-                      Selected BL &amp; Port
+                      Selected BL &amp; GRPO
                     </div>
                     <div className="text-[14px] font-bold font-mono-code">
-                      {blNo || "—"} · <span className="text-amber-300">{selectedPort}</span>
+                      {blNo || "—"}
                       {selectedGrpoDocNum ? ` · GRPO #${selectedGrpoDocNum}` : ""}
                     </div>
                   </div>
@@ -1764,7 +1644,6 @@ export default function App() {
                   <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
                     <tr>
                       <th className="py-3 px-3 text-center w-14">Check</th>
-                      <th className="py-3 px-3">Port</th>
                       <th className="py-3 px-3">RoDTEP Lic No</th>
                       <th className="py-3 px-3">Dated</th>
                       <th className="py-3 px-3">Scheme</th>
@@ -1779,15 +1658,12 @@ export default function App() {
                   <tbody className="divide-y divide-black/[0.06] bg-white">
                     {displayedPendingScrips.length === 0 ? (
                       <tr>
-                        <td colSpan={11} className="py-8 text-center text-[#8a8780]">
+                        <td colSpan={10} className="py-8 text-center text-[#8a8780]">
                           No pending RoDTEP scrips found. Go to Tab 1 to paste your Excel scrips.
                         </td>
                       </tr>
                     ) : (
                       displayedPendingScrips.map((scrip) => {
-                        const isPortMatch =
-                          String(scrip.PortLocation || "").toUpperCase() ===
-                          selectedPort.toUpperCase();
                         const isChecked = checkedScrips[scrip.LicNo] !== undefined;
                         const currentUsed = isChecked ? Number(checkedScrips[scrip.LicNo] || 0) : 0;
                         const availBal = Number(scrip.BalanceAmount || 0);
@@ -1797,14 +1673,12 @@ export default function App() {
                           <tr
                             key={scrip.LicNo}
                             onClick={() => {
-                              if (isPortMatch && !isChecked) {
+                              if (!isChecked) {
                                 handleToggleScripCheckbox(scrip);
                               }
                             }}
                             className={`transition-colors ${
-                              !isPortMatch
-                                ? "bg-gray-100/80 opacity-55 cursor-not-allowed"
-                                : isChecked
+                              isChecked
                                 ? "bg-emerald-50/70"
                                 : "hover:bg-[#faf9f7] cursor-pointer"
                             }`}
@@ -1816,28 +1690,10 @@ export default function App() {
                               <input
                                 type="checkbox"
                                 checked={isChecked}
-                                disabled={!isPortMatch}
                                 onChange={() => handleToggleScripCheckbox(scrip)}
-                                title={
-                                  !isPortMatch
-                                    ? `Locked: This scrip belongs to ${scrip.PortLocation} and cannot be checked when posting for ${selectedPort}`
-                                    : "Check to attach this RoDTEP scrip"
-                                }
-                                className="w-4 h-4 accent-[#c8102e] cursor-pointer disabled:cursor-not-allowed"
+                                title="Check to attach this RoDTEP scrip"
+                                className="w-4 h-4 accent-[#c8102e] cursor-pointer"
                               />
-                            </td>
-
-                            <td className="py-2.5 px-3">
-                              <span
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10.5px] font-bold ${
-                                  String(scrip.PortLocation).toUpperCase() === "CHENNAI"
-                                    ? "bg-purple-100 text-purple-900"
-                                    : "bg-blue-100 text-blue-900"
-                                }`}
-                              >
-                                {scrip.PortLocation}
-                                {!isPortMatch && " 🔒"}
-                              </span>
                             </td>
 
                             <td className="py-2.5 px-3 font-mono-code font-bold text-[#1a1a1a]">
@@ -1928,7 +1784,6 @@ export default function App() {
                   <thead className="bg-[#f4f2ef] border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
                     <tr>
                       <th className="py-2.5 px-3">BL Number</th>
-                      <th className="py-2.5 px-3">Port</th>
                       <th className="py-2.5 px-3">GRPO #</th>
                       <th className="py-2.5 px-3">BOE No</th>
                       <th className="py-2.5 px-3 text-right">Draft BOE Amt</th>
@@ -1950,17 +1805,6 @@ export default function App() {
                         <tr key={u.Id} className="hover:bg-[#faf9f7]">
                           <td className="py-2.5 px-3 font-mono-code font-bold text-[#1a1a1a]">
                             {u.BLNo}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                String(u.PortLocation).toUpperCase() === "CHENNAI"
-                                  ? "bg-purple-100 text-purple-900"
-                                  : "bg-blue-100 text-blue-900"
-                              }`}
-                            >
-                              {u.PortLocation}
-                            </span>
                           </td>
                           <td className="py-2.5 px-3 font-mono-code">
                             {u.GRPODocNum ? `#${u.GRPODocNum}` : "—"}
@@ -2028,7 +1872,6 @@ export default function App() {
                       <th className="py-2.5 px-3">Exporter</th>
                       <th className="py-2.5 px-3">Scheme</th>
                       <th className="py-2.5 px-3">Port Code</th>
-                      <th className="py-2.5 px-3">Port</th>
                       <th className="py-2.5 px-3">AP Inv #</th>
                       <th className="py-2.5 px-3 text-right">Scrip Amount</th>
                       <th className="py-2.5 px-3 text-right">Utilized (On-The-Fly)</th>
