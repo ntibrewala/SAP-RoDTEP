@@ -262,6 +262,9 @@ export default function App() {
   const [pastedScrips, setPastedScrips] = useState([]);
   const [submittingAp, setSubmittingAp] = useState(false);
   const [expandedApDocs, setExpandedApDocs] = useState({});
+  const [expandedGrpoDocs, setExpandedGrpoDocs] = useState({});
+  const [grpoListViewMode, setGrpoListViewMode] = useState("ATTACHED_ONLY"); // "ATTACHED_ONLY" | "PENDING_ONLY" | "ALL_GRPO"
+  const toggleExpandGrpo = (key) => setExpandedGrpoDocs((prev) => ({ ...prev, [key]: !prev[key] }));
   const toggleExpandAp = (key) => setExpandedApDocs((prev) => ({ ...prev, [key]: !prev[key] }));
 
   // --- MODULE 2 STATE (BL + GRPO + Port + Draft BOE Amount -> Port-Locked Checkbox Scrip Selection) ---
@@ -390,6 +393,92 @@ export default function App() {
       return !info || !info.isFullyLinked;
     });
   }, [apInvoices, apLinkMap]);
+
+  // Per-GRPO / BL Attached Scrips Map & Summary List
+  const { grpoAttachmentRows, unattachedGrpos } = useMemo(() => {
+    const usedUtilIds = new Set();
+    const rows = [];
+
+    for (const g of grpos || []) {
+      const gEntry = Number(g.GRPODocEntry || 0);
+      const gNum = Number(g.GRPODocNum || 0);
+      const gBl = String(g.BLNo || "").trim().toUpperCase();
+
+      const matchingUtils = (utilizations || []).filter((u) => {
+        if (gEntry && Number(u.GRPODocEntry) === gEntry) return true;
+        if (gNum && Number(u.GRPODocNum) === gNum) return true;
+        if (gBl && String(u.BLNo || "").trim().toUpperCase() === gBl) return true;
+        return false;
+      });
+
+      matchingUtils.forEach((u) => usedUtilIds.add(u.Id));
+
+      const totalAttached = Number(
+        matchingUtils.reduce((sum, u) => sum + Number(u.AmountUsed || 0), 0).toFixed(2)
+      );
+      const draftBoe = matchingUtils.length > 0
+        ? Math.max(...matchingUtils.map((u) => Number(u.DraftBOEAmount || 0)), Number(g.BoEValue || 0))
+        : Number(g.BoEValue || 0);
+      const isAttached = matchingUtils.length > 0 && totalAttached > 0;
+
+      rows.push({
+        rowKey: `GRPO_${g.GRPODocEntry}`,
+        GRPODocEntry: g.GRPODocEntry,
+        GRPODocNum: g.GRPODocNum,
+        GRPODate: g.GRPODate,
+        CardCode: g.CardCode,
+        CardName: g.CardName,
+        VendorRefNo: g.VendorRefNo,
+        BLNo: g.BLNo || (matchingUtils[0] ? matchingUtils[0].BLNo : ""),
+        BOENo: g.BOENo || (matchingUtils[0] ? matchingUtils[0].BOENo : ""),
+        DraftBOEAmount: draftBoe,
+        totalAttached,
+        attachedScrips: matchingUtils,
+        isAttached
+      });
+    }
+
+    // Also include any BL attachments in utilizations that were entered manually without matching a row in grpos
+    const orphanByBl = {};
+    for (const u of utilizations || []) {
+      if (usedUtilIds.has(u.Id)) continue;
+      const key = String(u.BLNo || u.GRPODocNum || u.Id).trim().toUpperCase();
+      if (!orphanByBl[key]) {
+        orphanByBl[key] = [];
+      }
+      orphanByBl[key].push(u);
+    }
+
+    for (const [blKey, list] of Object.entries(orphanByBl)) {
+      const first = list[0];
+      const totalAttached = Number(
+        list.reduce((sum, u) => sum + Number(u.AmountUsed || 0), 0).toFixed(2)
+      );
+      const draftBoe = Math.max(...list.map((u) => Number(u.DraftBOEAmount || 0)));
+      rows.push({
+        rowKey: `BL_${blKey}`,
+        GRPODocEntry: first.GRPODocEntry || null,
+        GRPODocNum: first.GRPODocNum || null,
+        GRPODate: first.CreatedAt ? String(first.CreatedAt).slice(0, 10) : "—",
+        CardCode: "",
+        CardName: "Direct BL Attachment",
+        VendorRefNo: "",
+        BLNo: first.BLNo,
+        BOENo: first.BOENo || "",
+        DraftBOEAmount: draftBoe,
+        totalAttached,
+        attachedScrips: list,
+        isAttached: true
+      });
+    }
+
+    const unattached = (grpos || []).filter((g) => {
+      const r = rows.find((x) => Number(x.GRPODocEntry) === Number(g.GRPODocEntry));
+      return !r || !r.isAttached;
+    });
+
+    return { grpoAttachmentRows: rows, unattachedGrpos: unattached };
+  }, [grpos, utilizations]);
 
   // Existing LicNo set to warn on duplicates in Module 1
   const existingLicSet = useMemo(() => {
@@ -729,6 +818,10 @@ export default function App() {
       });
 
       setCheckedScrips({});
+      setSelectedGrpoDocEntry("");
+      setSelectedGrpoDocNum("");
+      setBlNo("");
+      setDraftBoeAmount("");
       await fetchAllData();
     } catch (err) {
       setBanner({
@@ -1628,17 +1721,17 @@ export default function App() {
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#f4f2ef]/80 p-4 rounded-[6px] border border-black/[0.08]">
                 <div className="md:col-span-2">
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                    1. Select Import GRPO (Captures GRPO # &amp; Auto-Picks BL)
+                    1. Select Pending Import GRPO (Already-Attached GRPOs Are Hidden)
                   </label>
                   <select
                     value={selectedGrpoDocEntry}
                     onChange={(e) => handleSelectGrpo(e.target.value)}
                     className="w-full px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[12.5px] font-mono-code"
                   >
-                    <option value="">-- Optional: Select Import GRPO (or enter BL manually) --</option>
-                    {grpos.map((g) => (
+                    <option value="">-- Select Unattached Import GRPO (or enter BL manually) --</option>
+                    {unattachedGrpos.map((g) => (
                       <option key={g.GRPODocEntry} value={g.GRPODocEntry}>
-                        GRPO #{g.GRPODocNum} | BL: {g.BLNo || "N/A"} |{" "}
+                        GRPO #{g.GRPODocNum} ({g.GRPODate}) | BL: {g.BLNo || "N/A"} |{" "}
                         {g.BOENo ? `BOE: ${g.BOENo}` : "BOE Pending (Draft)"} | {g.CardName}
                       </option>
                     ))}
@@ -1913,6 +2006,236 @@ export default function App() {
                         );
                       })
                     )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* SECOND CARD IN MODULE 2: CHECK GRPOs / BLs AGAINST WHICH ATTACHMENT HAS ALREADY HAPPENED */}
+            <div className="rp-card p-6 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/[0.08] pb-3">
+                <div>
+                  <span className="sec-label">GRPO &amp; BL Attachment Tracker · Parent–Child View</span>
+                  <h3 className="text-[16px] font-extrabold text-[#1a1a1a] mt-0.5">
+                    {grpoListViewMode === "ATTACHED_ONLY"
+                      ? `GRPOs / BLs with Attached RoDTEP Scrips (${grpoAttachmentRows.filter((r) => r.isAttached).length})`
+                      : grpoListViewMode === "PENDING_ONLY"
+                      ? `Pending Import GRPOs Without Scrip Attachment (${grpoAttachmentRows.filter((r) => !r.isAttached).length})`
+                      : `All Import GRPOs & BLs (${grpoAttachmentRows.length})`}
+                  </h3>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setGrpoListViewMode("ATTACHED_ONLY")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      grpoListViewMode === "ATTACHED_ONLY"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    ✓ Attached GRPOs / BLs ({grpoAttachmentRows.filter((r) => r.isAttached).length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGrpoListViewMode("PENDING_ONLY")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      grpoListViewMode === "PENDING_ONLY"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    Pending GRPOs ({grpoAttachmentRows.filter((r) => !r.isAttached).length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGrpoListViewMode("ALL_GRPO")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      grpoListViewMode === "ALL_GRPO"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    All Import GRPOs ({grpoAttachmentRows.length})
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto max-h-[500px] border border-black/10 rounded-[6px]">
+                <table className="w-full text-left border-collapse text-[12px]">
+                  <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
+                    <tr>
+                      <th className="py-2.5 px-3">#</th>
+                      <th className="py-2.5 px-3">GRPO #</th>
+                      <th className="py-2.5 px-3">GRPO Date</th>
+                      <th className="py-2.5 px-3">BL Number</th>
+                      <th className="py-2.5 px-3">Vendor</th>
+                      <th className="py-2.5 px-3">BOE No</th>
+                      <th className="py-2.5 px-3 text-right">Draft BOE / Duty Amt</th>
+                      <th className="py-2.5 px-3 text-right">Scrips Attached (₹)</th>
+                      <th className="py-2.5 px-3 text-center">Attached Scrips / Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-black/[0.06] bg-white">
+                    {(() => {
+                      const filteredRows =
+                        grpoListViewMode === "ATTACHED_ONLY"
+                          ? grpoAttachmentRows.filter((r) => r.isAttached)
+                          : grpoListViewMode === "PENDING_ONLY"
+                          ? grpoAttachmentRows.filter((r) => !r.isAttached)
+                          : grpoAttachmentRows;
+
+                      if (filteredRows.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={9} className="py-8 text-center text-[#8a8780]">
+                              {grpoListViewMode === "ATTACHED_ONLY"
+                                ? "No GRPOs or BLs have attached RoDTEP scrips yet. Select a GRPO above, check scrips, and click Attach."
+                                : "No matching Import GRPOs found."}
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return filteredRows.map((r, idx) => {
+                        const isExpanded = !!expandedGrpoDocs[r.rowKey];
+                        return (
+                          <React.Fragment key={r.rowKey}>
+                            <tr className={`hover:bg-[#faf9f7] ${isExpanded ? "bg-blue-50/40" : ""}`}>
+                              <td className="py-2.5 px-3 font-mono-code text-[#888]">{idx + 1}</td>
+                              <td className="py-2.5 px-3 font-mono-code font-bold text-[#c8102e]">
+                                {r.GRPODocNum ? `#${r.GRPODocNum}` : "—"}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono-code">{r.GRPODate || "—"}</td>
+                              <td className="py-2.5 px-3 font-mono-code font-bold text-[#1a1a1a]">
+                                {r.BLNo || "—"}
+                              </td>
+                              <td className="py-2.5 px-3 font-medium truncate max-w-[200px]">
+                                {r.CardName || "—"}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono-code">
+                                {r.BOENo ? (
+                                  <span className="font-semibold text-[#1a1a1a]">{r.BOENo}</span>
+                                ) : (
+                                  <span className="text-amber-700 font-semibold">Draft / Pending</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono-code font-semibold">
+                                {r.DraftBOEAmount > 0 ? `₹${formatINR(r.DraftBOEAmount)}` : "—"}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono-code">
+                                {r.isAttached ? (
+                                  <span className="text-emerald-700 font-bold">
+                                    ₹{formatINR(r.totalAttached)} ({r.attachedScrips.length} Scrips)
+                                  </span>
+                                ) : (
+                                  <span className="text-[#999]">₹0.00</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                  {r.isAttached ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleExpandGrpo(r.rowKey)}
+                                        className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                      >
+                                        {isExpanded
+                                          ? `Hide Scrips (${r.attachedScrips.length}) ▲`
+                                          : `View Scrips (${r.attachedScrips.length}) ▼`}
+                                      </button>
+                                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[10px] font-bold uppercase">
+                                        ✓ Attached
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (r.GRPODocEntry) {
+                                          handleSelectGrpo(String(r.GRPODocEntry));
+                                        } else if (r.BLNo) {
+                                          setBlNo(r.BLNo);
+                                        }
+                                        window.scrollTo({ top: 0, behavior: "smooth" });
+                                      }}
+                                      className="px-2.5 py-1 bg-[#1a1a1a] hover:bg-[#c8102e] text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                    >
+                                      + Select GRPO to Attach
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+
+                            {/* Expandable Child Row listing all RoDTEP Scrips attached to this GRPO / BL */}
+                            {isExpanded && r.attachedScrips.length > 0 && (
+                              <tr className="bg-[#f8fafc]">
+                                <td colSpan={9} className="p-3 border-l-4 border-l-blue-600">
+                                  <div className="text-[11px] font-bold uppercase tracking-wider text-blue-900 mb-2 flex items-center justify-between">
+                                    <span>
+                                      Attached RoDTEP / RoSCTL Scrips for{" "}
+                                      {r.GRPODocNum ? `GRPO #${r.GRPODocNum}` : ""} (BL: {r.BLNo || "—"}) —{" "}
+                                      {r.attachedScrips.length} Scrips Totaling ₹{formatINR(r.totalAttached)}
+                                    </span>
+                                  </div>
+                                  <div className="overflow-x-auto border border-blue-200 rounded bg-white">
+                                    <table className="w-full text-left border-collapse text-[11.5px]">
+                                      <thead className="bg-blue-50 text-[10px] font-bold uppercase tracking-wider text-blue-950 border-b border-blue-200">
+                                        <tr>
+                                          <th className="py-1.5 px-2.5">#</th>
+                                          <th className="py-1.5 px-2.5">RoDTEP Lic No</th>
+                                          <th className="py-1.5 px-2.5">Scheme</th>
+                                          <th className="py-1.5 px-2.5">Exporter</th>
+                                          <th className="py-1.5 px-2.5">Port Code</th>
+                                          <th className="py-1.5 px-2.5">AP Inv #</th>
+                                          <th className="py-1.5 px-2.5 text-right">Original Scrip Amt (₹)</th>
+                                          <th className="py-1.5 px-2.5 text-right">Amount Used on This GRPO/BL (₹)</th>
+                                          <th className="py-1.5 px-2.5 text-center">Action</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-blue-100">
+                                        {r.attachedScrips.map((u, uIdx) => (
+                                          <tr key={u.Id} className="hover:bg-blue-50/30">
+                                            <td className="py-1.5 px-2.5 font-mono-code text-[#777]">{uIdx + 1}</td>
+                                            <td className="py-1.5 px-2.5 font-mono-code font-bold text-[#c8102e]">
+                                              {u.LicNo}
+                                            </td>
+                                            <td className="py-1.5 px-2.5 font-bold text-[10.5px]">{u.Scheme}</td>
+                                            <td className="py-1.5 px-2.5">{u.ExporterName}</td>
+                                            <td className="py-1.5 px-2.5 font-mono-code">{u.PortCode || "—"}</td>
+                                            <td className="py-1.5 px-2.5 font-mono-code">
+                                              {u.APDocNum ? `#${u.APDocNum}` : "—"}
+                                            </td>
+                                            <td className="py-1.5 px-2.5 text-right font-mono-code text-[#666]">
+                                              ₹{formatINR(u.ScripAmount)}
+                                            </td>
+                                            <td className="py-1.5 px-2.5 text-right font-mono-code font-bold text-emerald-700">
+                                              ₹{formatINR(u.AmountUsed)}
+                                            </td>
+                                            <td className="py-1.5 px-2.5 text-center">
+                                              <button
+                                                type="button"
+                                                onClick={() => handleDeleteUtilization(u.Id)}
+                                                className="text-red-600 hover:underline text-[11px] font-bold cursor-pointer"
+                                              >
+                                                Detach
+                                              </button>
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      });
+                    })()}
                   </tbody>
                 </table>
               </div>
