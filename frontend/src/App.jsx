@@ -249,7 +249,7 @@ export default function App() {
   const [glListViewMode, setGlListViewMode] = useState("PENDING_ONLY"); // "ALL_AP" | "PENDING_ONLY" | "BOE_CREDITS"
 
   // --- MODULE 1 STATE (Excel Paste -> Auto-Create AP Invoice) ---
-  const [apMode, setApMode] = useState("SAVE_ONLY"); // "SAVE_ONLY" | "LINK_EXISTING" | "CREATE_AP"
+  const [apMode, setApMode] = useState("CREATE_AP"); // "SAVE_ONLY" | "LINK_EXISTING" | "CREATE_AP"
   const [selectedCardCode, setSelectedCardCode] = useState("V00593");
   const [numAtCard, setNumAtCard] = useState("");
   const [docDate, setDocDate] = useState(() => new Date().toISOString().split("T")[0]);
