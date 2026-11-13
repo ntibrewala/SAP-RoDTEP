@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 
 let resolvedApiBase = null;
@@ -261,6 +261,8 @@ export default function App() {
   const [rawPasteText, setRawPasteText] = useState("");
   const [pastedScrips, setPastedScrips] = useState([]);
   const [submittingAp, setSubmittingAp] = useState(false);
+  const [expandedApDocs, setExpandedApDocs] = useState({});
+  const toggleExpandAp = (key) => setExpandedApDocs((prev) => ({ ...prev, [key]: !prev[key] }));
 
   // --- MODULE 2 STATE (BL + GRPO + Port + Draft BOE Amount -> Port-Locked Checkbox Scrip Selection) ---
   const [selectedGrpoDocEntry, setSelectedGrpoDocEntry] = useState("");
@@ -346,6 +348,48 @@ export default function App() {
       netPayable: Number(netPayable.toFixed(2))
     };
   }, [pastedScrips, discountAmount]);
+
+  // Per-AP Invoice Linked Scrips & Unlinked Balance Map
+  const apLinkMap = useMemo(() => {
+    const map = {};
+    const getScripsForAp = (docEntry, docNum) =>
+      (scrips || []).filter(
+        (s) =>
+          (docEntry && Number(s.APDocEntry) === Number(docEntry)) ||
+          (docNum && Number(s.APDocNum) === Number(docNum))
+      );
+
+    for (const inv of apInvoices || []) {
+      const list = getScripsForAp(inv.DocEntry, inv.DocNum);
+      const linkedTotal = Number(
+        list.reduce((sum, s) => sum + Number(s.ScripAmount || 0), 0).toFixed(2)
+      );
+      const origDebit = Number(inv.ScripFaceValue || 0);
+      const pendingRecon = Number(inv.InternalReconPending || 0);
+      const targetAmt = pendingRecon > 0 ? pendingRecon : origDebit;
+      const unlinkedBalance = Math.max(0, Number((targetAmt - linkedTotal).toFixed(2)));
+      const isFullyLinked = linkedTotal > 0 && unlinkedBalance <= 0.5;
+      map[`ENTRY_${inv.DocEntry}`] = {
+        scrips: list,
+        linkedTotal,
+        targetAmt,
+        unlinkedBalance,
+        isFullyLinked
+      };
+      if (inv.DocNum) {
+        map[`NUM_${inv.DocNum}`] = map[`ENTRY_${inv.DocEntry}`];
+      }
+    }
+    return map;
+  }, [apInvoices, scrips]);
+
+  // Only show AP invoices in Link dropdowns that still have unlinked balance > 0
+  const linkableApInvoices = useMemo(() => {
+    return (apInvoices || []).filter((inv) => {
+      const info = apLinkMap[`ENTRY_${inv.DocEntry}`];
+      return !info || !info.isFullyLinked;
+    });
+  }, [apInvoices, apLinkMap]);
 
   // Existing LicNo set to warn on duplicates in Module 1
   const existingLicSet = useMemo(() => {
@@ -572,14 +616,10 @@ export default function App() {
       return;
     }
 
-    const matchingPortScrips = pendingScrips.filter(
-      (s) => String(s.PortLocation || "").toUpperCase() === selectedPort.toUpperCase()
-    );
-
     let remainingNeeded = target;
     const nextChecked = {};
 
-    for (const s of matchingPortScrips) {
+    for (const s of displayedPendingScrips) {
       if (remainingNeeded <= 0.001) break;
       const avail = Number(s.BalanceAmount || 0);
       if (avail <= 0) continue;
@@ -910,234 +950,175 @@ export default function App() {
         {/* ===================================================================== */}
         {activeTab === "module1" && (
           <form onSubmit={handleSubmitModule1} className="space-y-6">
-            {/* Complete G/L 370001 List from Start (All 36 AP Invoices, 8 Pending Recon, & 58 BOE Credits) */}
-            <div className="rp-card p-5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/[0.08] pb-3">
-                <div>
-                  <span className="sec-label">SAP HANA Live · G/L 370001 (RODTEP Scrip Account) Complete Ledger from Start</span>
-                  <h3 className="text-[15px] font-extrabold text-[#1a1a1a]">
-                    {glListViewMode === "ALL_AP"
-                      ? `Complete RoDTEP A/P Invoice List from Start (${glAllApRows.length} Invoices · Total ₹${formatINR(glTotalPurchasedFromStart)})`
-                      : glListViewMode === "PENDING_ONLY"
-                      ? `Internal Reconciliation Pending A/P Invoices (${glReconPendingRows.length} Open · Pending ₹${formatINR(glReconPendingTotal)})`
-                      : `All BOE Duty Utilization Credit JEs from Start (${glAllBoeCreditRows.length} Entries)`}
-                  </h3>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setGlListViewMode("ALL_AP")}
-                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
-                      glListViewMode === "ALL_AP"
-                        ? "bg-[#c8102e] text-white"
-                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
-                    }`}
-                  >
-                    Complete AP List from Start ({glAllApRows.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setGlListViewMode("PENDING_ONLY")}
-                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
-                      glListViewMode === "PENDING_ONLY"
-                        ? "bg-[#c8102e] text-white"
-                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
-                    }`}
-                  >
-                    Pending Recon Only ({glReconPendingRows.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setGlListViewMode("BOE_CREDITS")}
-                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
-                      glListViewMode === "BOE_CREDITS"
-                        ? "bg-[#c8102e] text-white"
-                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
-                    }`}
-                  >
-                    All BOE Credit JEs ({glAllBoeCreditRows.length})
-                  </button>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto max-h-[380px] border border-black/10 rounded-[4px]">
-                {glListViewMode === "BOE_CREDITS" ? (
-                  <table className="w-full text-left border-collapse text-[12px]">
-                    <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
-                      <tr>
-                        <th className="py-2 px-3">#</th>
-                        <th className="py-2 px-3">JE #</th>
-                        <th className="py-2 px-3">Date</th>
-                        <th className="py-2 px-3">BOE / Duty Memo (LineMemo)</th>
-                        <th className="py-2 px-3 text-right">Credit Utilized (₹)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-black/[0.06] bg-white">
-                      {glAllBoeCreditRows.map((r, idx) => (
-                        <tr key={`${r.TransId}-${r.Line_ID}`} className="hover:bg-[#faf9f7]">
-                          <td className="py-2 px-3 font-mono-code text-[#888]">{idx + 1}</td>
-                          <td className="py-2 px-3 font-mono-code font-bold">#{r.BaseRef}</td>
-                          <td className="py-2 px-3 font-mono-code">{r.RefDate}</td>
-                          <td className="py-2 px-3 font-medium">{r.LineMemo || "-"}</td>
-                          <td className="py-2 px-3 text-right font-mono-code font-bold text-amber-800">
-                            ₹{formatINR(r.OriginalCredit)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <table className="w-full text-left border-collapse text-[12px]">
-                    <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
-                      <tr>
-                        <th className="py-2 px-3">#</th>
-                        <th className="py-2 px-3">AP #</th>
-                        <th className="py-2 px-3">Date</th>
-                        <th className="py-2 px-3">Vendor</th>
-                        <th className="py-2 px-3">Vendor Ref (NumAtCard)</th>
-                        <th className="py-2 px-3 text-right">Original 370001 Debit</th>
-                        <th className="py-2 px-3 text-right">Reconciled in SAP</th>
-                        <th className="py-2 px-3 text-right">Pending Recon (BalDueDeb)</th>
-                        <th className="py-2 px-3 text-right">Scrips Entered</th>
-                        <th className="py-2 px-3 text-center">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-black/[0.06] bg-white">
-                      {(glListViewMode === "ALL_AP" ? glAllApRows : glReconPendingRows).map((r, idx) => {
-                        const enteredForAp = scrips
-                          .filter(
-                            (s) =>
-                              Number(s.APDocEntry) === Number(r.APDocEntry) ||
-                              Number(s.APDocNum) === Number(r.APDocNum)
-                          )
-                          .reduce((sum, s) => sum + Number(s.ScripAmount || 0), 0);
-                        const isPending = Number(r.PendingReconBalance || 0) > 0;
-                        return (
-                          <tr key={`${r.TransId}-${r.Line_ID}`} className="hover:bg-[#faf9f7]">
-                            <td className="py-2 px-3 font-mono-code text-[#888]">{idx + 1}</td>
-                            <td className="py-2 px-3 font-mono-code font-bold text-[#c8102e]">
-                              #{r.APDocNum || r.BaseRef}
-                            </td>
-                            <td className="py-2 px-3 font-mono-code">{r.RefDate}</td>
-                            <td className="py-2 px-3 font-medium">
-                              {r.CardName} <span className="text-[11px] text-[#777]">({r.CardCode})</span>
-                            </td>
-                            <td className="py-2 px-3 font-mono-code">{r.NumAtCard || "-"}</td>
-                            <td className="py-2 px-3 text-right font-mono-code font-semibold">
-                              ₹{formatINR(r.OriginalDebit)}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono-code text-[#666]">
-                              ₹{formatINR(r.ReconciledAmount)}
-                            </td>
-                            <td
-                              className={`py-2 px-3 text-right font-mono-code font-bold ${
-                                isPending ? "text-emerald-700" : "text-[#999]"
-                              }`}
-                            >
-                              ₹{formatINR(r.PendingReconBalance)}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono-code">
-                              {enteredForAp > 0 ? (
-                                <span className="text-blue-700 font-bold">₹{formatINR(enteredForAp)}</span>
-                              ) : (
-                                <span className="text-[#999]">₹0.00</span>
-                              )}
-                            </td>
-                            <td className="py-2 px-3 text-center">
-                              {r.APDocEntry && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setApMode("LINK_EXISTING");
-                                    handleSelectExistingAp(String(r.APDocEntry));
-                                  }}
-                                  className="px-2.5 py-1 bg-[#1a1a1a] hover:bg-[#c8102e] text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
-                                >
-                                  Link Scrips
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </div>
-
-            <div className="rp-card p-6 space-y-5">
+            {/* TOP CARD: START FROM SCRATCH WITH EXCEL -> CREATE NEW SAP A/P INVOICE (OR LINK EXISTING) */}
+            <div className="rp-card p-6 space-y-5 border-t-4 border-t-[#c8102e]">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-black/[0.08] pb-4">
                 <div>
-                  <span className="sec-label">Module 1 · Table 1 (BHV_RODTEP_SCRIP)</span>
+                  <span className="sec-label">Module 1 · Start Here with Your RoDTEP Excel Sheet</span>
                   <h2 className="text-xl font-extrabold text-[#1a1a1a] mt-1">
-                    Purchase RoDTEP / RoSCTL Scrips &amp; Create SAP A/P Invoice
+                    {apMode === "CREATE_AP"
+                      ? "Start from Scratch: Paste RoDTEP Excel & Create New SAP A/P Invoice"
+                      : apMode === "LINK_EXISTING"
+                      ? "Link Pasted RoDTEP Excel Scrips to Existing SAP A/P Invoice"
+                      : "Import Pending RoDTEP Scrips Only (Link SAP A/P Invoice Later)"}
                   </h2>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setApMode("SAVE_ONLY")}
+                    onClick={() => setApMode("CREATE_AP")}
                     className={`px-3.5 py-2 rounded-[4px] text-[11px] font-bold uppercase tracking-wider cursor-pointer ${
-                      apMode === "SAVE_ONLY"
-                        ? "bg-[#c8102e] text-white"
+                      apMode === "CREATE_AP"
+                        ? "bg-[#c8102e] text-white shadow-sm"
                         : "bg-[#f4f2ef] text-[#555] hover:bg-[#e8e4dd]"
                     }`}
                   >
-                    1. Import Pending Scrips (Link AP # Later)
+                    1. Create New SAP A/P Invoice (From Excel)
                   </button>
                   <button
                     type="button"
                     onClick={() => setApMode("LINK_EXISTING")}
                     className={`px-3.5 py-2 rounded-[4px] text-[11px] font-bold uppercase tracking-wider cursor-pointer ${
                       apMode === "LINK_EXISTING"
-                        ? "bg-[#1a1a1a] text-white"
+                        ? "bg-[#1a1a1a] text-white shadow-sm"
                         : "bg-[#f4f2ef] text-[#555] hover:bg-[#e8e4dd]"
                     }`}
                   >
-                    2. Link Batch to SAP AP Invoice
+                    2. Link Excel to Existing SAP AP Invoice
                   </button>
                   <button
                     type="button"
-                    onClick={() => setApMode("CREATE_AP")}
+                    onClick={() => setApMode("SAVE_ONLY")}
                     className={`px-3.5 py-2 rounded-[4px] text-[11px] font-bold uppercase tracking-wider cursor-pointer ${
-                      apMode === "CREATE_AP"
-                        ? "bg-[#1a1a1a] text-white"
+                      apMode === "SAVE_ONLY"
+                        ? "bg-[#1a1a1a] text-white shadow-sm"
                         : "bg-[#f4f2ef] text-[#555] hover:bg-[#e8e4dd]"
                     }`}
                   >
-                    3. Create New AP Invoice (Service Layer)
+                    3. Import Scrips Only (Link AP # Later)
                   </button>
                 </div>
               </div>
 
               {/* A/P Invoice Header Fields */}
-              {apMode === "SAVE_ONLY" ? (
-                <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-[6px] text-[12.5px] text-emerald-950 flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <strong>Quick Pending Import Mode:</strong> Paste your pending RoDTEP scrips (~₹34.49 Lakhs) below and save them directly. You do <strong>not</strong> need to select an A/P Invoice now — you can link or change the SAP A/P Invoice # per scrip anytime later in Tab 3 (or in the optional AP # column below).
+              {apMode === "CREATE_AP" ? (
+                <div className="space-y-4">
+                  <div className="bg-amber-50/80 border border-amber-200 p-3.5 rounded-[6px] text-[12.5px] text-amber-950">
+                    <strong>How to enter a New A/P Invoice from scratch using only your RoDTEP Excel sheet:</strong>
+                    <ol className="list-decimal list-inside mt-1 space-y-0.5 text-[12px]">
+                      <li>
+                        Select the <strong>Vendor</strong>, enter the <strong>Vendor Bill Ref (NumAtCard)</strong>, <strong>Posting Date</strong>, and <strong>Gain / Discount Amount (G/L 410023)</strong> below.
+                      </li>
+                      <li>
+                        Copy the rows from your RoDTEP Scrips Excel sheet and paste (<strong>Ctrl+V</strong>) into the box below — the system automatically sums the Scrip Face Value for <strong>G/L 370001</strong>.
+                      </li>
+                      <li>
+                        Click <strong>&ldquo;Create SAP A/P Invoice &amp; Save Scrips&rdquo;</strong> — it posts the new Service A/P Invoice in SAP B1 and automatically links all the pasted RoDTEP scrips to that new A/P Invoice in one step!
+                      </li>
+                    </ol>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 bg-[#f4f2ef]/70 p-4 rounded-[6px] border border-black/[0.08]">
+                    <div className="lg:col-span-2">
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
+                        1. Select Vendor (CardCode) *
+                      </label>
+                      <select
+                        value={selectedCardCode}
+                        onChange={(e) => setSelectedCardCode(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-medium"
+                        required
+                      >
+                        {vendors.map((v) => (
+                          <option key={v.CardCode} value={v.CardCode}>
+                            {v.CardCode} — {v.CardName} {v.IsScripVendor ? "★" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
+                        2. Vendor Bill No (NumAtCard) *
+                      </label>
+                      <input
+                        type="text"
+                        value={numAtCard}
+                        onChange={(e) => setNumAtCard(e.target.value)}
+                        placeholder="e.g. SCRP15/11/26-27"
+                        className="w-full px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-mono-code"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
+                        3. Posting Date (DocDate) *
+                      </label>
+                      <input
+                        type="date"
+                        value={docDate}
+                        onChange={(e) => setDocDate(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-mono-code"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
+                        4. Gain / Discount (G/L 410023 ₹)
+                      </label>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={discountPercentageOrAmtDisplay(discountPercent)}
+                          onChange={(e) => {
+                            const pct = e.target.value;
+                            setDiscountPercent(pct);
+                            if (pct && !isNaN(Number(pct)) && pastedSummary.total > 0) {
+                              setDiscountAmount(
+                                String(Math.round((pastedSummary.total * Number(pct)) / 100))
+                              );
+                            }
+                          }}
+                          placeholder="%"
+                          title="Optional Discount % calculator"
+                          className="w-16 px-2 py-2 bg-white border border-black/20 rounded-[4px] text-[12px] font-mono-code"
+                        />
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={discountAmount}
+                          onChange={(e) => setDiscountAmount(e.target.value)}
+                          placeholder="e.g. 20414"
+                          className="flex-1 px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-mono-code"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : apMode === "LINK_EXISTING" ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#f4f2ef]/70 p-4 rounded-[6px] border border-black/[0.08]">
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1.5">
-                      Select Existing SAP A/P Invoice (G/L 370001 - RODTEP Scrip Account)
+                      Select Existing SAP A/P Invoice with Unlinked Balance (Fully Linked Invoices Are Hidden)
                     </label>
                     <select
                       value={selectedExistingApDocEntry}
                       onChange={(e) => handleSelectExistingAp(e.target.value)}
                       className="w-full px-3 py-2.5 bg-white border border-black/20 rounded-[4px] text-[13px] font-mono-code"
                     >
-                      <option value="">-- Choose SAP A/P Invoice --</option>
-                      {apInvoices.map((inv) => (
-                        <option key={inv.DocEntry} value={inv.DocEntry}>
-                          #{inv.DocNum} | {inv.DocDate} | {inv.CardName} ({inv.CardCode}) | Ref:{" "}
-                          {inv.NumAtCard || "-"} | Orig: ₹{formatINR(inv.ScripFaceValue)} | Pending Recon: ₹{formatINR(inv.InternalReconPending)}
-                        </option>
-                      ))}
+                      <option value="">-- Choose SAP A/P Invoice to Link --</option>
+                      {linkableApInvoices.map((inv) => {
+                        const info = apLinkMap[`ENTRY_${inv.DocEntry}`];
+                        const unlinked = info ? info.unlinkedBalance : Number(inv.InternalReconPending || inv.ScripFaceValue || 0);
+                        return (
+                          <option key={inv.DocEntry} value={inv.DocEntry}>
+                            #{inv.DocNum} | {inv.DocDate} | {inv.CardName} | Ref: {inv.NumAtCard || "-"} | Unlinked Bal: ₹{formatINR(unlinked)}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
 
@@ -1154,82 +1135,9 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-                  <div className="lg:col-span-2">
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                      Vendor (CardCode) *
-                    </label>
-                    <select
-                      value={selectedCardCode}
-                      onChange={(e) => setSelectedCardCode(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-medium"
-                      required
-                    >
-                      {vendors.map((v) => (
-                        <option key={v.CardCode} value={v.CardCode}>
-                          {v.CardCode} — {v.CardName} {v.IsScripVendor ? "★" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
+                <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-[6px] text-[12.5px] text-emerald-950 flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                      Vendor Ref No (NumAtCard)
-                    </label>
-                    <input
-                      type="text"
-                      value={numAtCard}
-                      onChange={(e) => setNumAtCard(e.target.value)}
-                      placeholder="e.g. SCRP15/11/26-27"
-                      className="w-full px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-mono-code"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                      Posting Date (DocDate)
-                    </label>
-                    <input
-                      type="date"
-                      value={docDate}
-                      onChange={(e) => setDocDate(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-mono-code"
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#444] mb-1">
-                      Gain / Discount (G/L 410023 ₹)
-                    </label>
-                    <div className="flex gap-1.5">
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={discountPercentageOrAmtDisplay(discountPercent)}
-                        onChange={(e) => {
-                          const pct = e.target.value;
-                          setDiscountPercent(pct);
-                          if (pct && !isNaN(Number(pct)) && pastedSummary.total > 0) {
-                            setDiscountAmount(
-                              String(Math.round((pastedSummary.total * Number(pct)) / 100))
-                            );
-                          }
-                        }}
-                        placeholder="%"
-                        title="Optional Discount % calculator"
-                        className="w-16 px-2 py-2 bg-white border border-black/20 rounded-[4px] text-[12px] font-mono-code"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={discountAmount}
-                        onChange={(e) => setDiscountAmount(e.target.value)}
-                        placeholder="e.g. 20414"
-                        className="flex-1 px-3 py-2 bg-white border border-black/20 rounded-[4px] text-[13px] font-mono-code"
-                      />
-                    </div>
+                    <strong>Quick Pending Import Mode:</strong> Paste your pending RoDTEP scrips below and save them directly. You can link them to an SAP A/P Invoice # anytime later.
                   </div>
                 </div>
               )}
@@ -1238,7 +1146,9 @@ export default function App() {
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-[#444]">
-                    Copy &amp; Paste from Excel (EXPORTER | LIC NO | DATED | SCHEME | PORT CODE | SCRIP AMOUNT)
+                    {apMode === "CREATE_AP"
+                      ? "5. Copy & Paste RoDTEP Scrips from Excel (EXPORTER | LIC NO | DATED | SCHEME | PORT CODE | SCRIP AMOUNT)"
+                      : "Copy & Paste RoDTEP Scrips from Excel (EXPORTER | LIC NO | DATED | SCHEME | PORT CODE | SCRIP AMOUNT)"}
                   </label>
                   <div className="flex items-center gap-2">
                     <button
@@ -1267,7 +1177,7 @@ export default function App() {
                   rows={4}
                   value={rawPasteText}
                   onChange={(e) => handlePasteTextChange(e.target.value)}
-                  placeholder="Click here and press Ctrl+V / Cmd+V after copying rows from Excel..."
+                  placeholder="Click here and press Ctrl+V / Cmd+V after copying rows from your RoDTEP Excel sheet..."
                   className="w-full p-3 bg-[#faf9f7] border border-dashed border-black/30 rounded-[4px] text-[12px] font-mono-code focus:border-[#c8102e] focus:bg-white outline-none"
                 />
               </div>
@@ -1320,7 +1230,9 @@ export default function App() {
                           <th className="py-2.5 px-3">Scheme</th>
                           <th className="py-2.5 px-3">Port Code</th>
                           <th className="py-2.5 px-3 text-right">Scrip Amount (₹)</th>
-                          <th className="py-2.5 px-3">SAP AP # (Optional / Later)</th>
+                          {apMode === "SAVE_ONLY" && (
+                            <th className="py-2.5 px-3">SAP AP # (Optional / Later)</th>
+                          )}
                           <th className="py-2.5 px-3 text-center">Del</th>
                         </tr>
                       </thead>
@@ -1381,36 +1293,38 @@ export default function App() {
                                   className="w-28 px-2 py-1 text-right border border-black/15 rounded font-mono-code font-bold text-[12px]"
                                 />
                               </td>
-                              <td className="py-2 px-3">
-                                <select
-                                  value={row.APDocEntry || ""}
-                                  onChange={(e) => {
-                                    const entry = e.target.value;
-                                    const found = apInvoices.find((a) => String(a.DocEntry) === String(entry));
-                                    setPastedScrips((prev) => {
-                                      const copy = [...prev];
-                                      copy[idx] = {
-                                        ...copy[idx],
-                                        APDocEntry: found ? found.DocEntry : null,
-                                        APDocNum: found ? found.DocNum : null,
-                                        CardCode: found ? found.CardCode : "",
-                                        CardName: found ? found.CardName : "",
-                                        NumAtCard: found ? found.NumAtCard : "",
-                                        APDocDate: found ? found.DocDate : ""
-                                      };
-                                      return copy;
-                                    });
-                                  }}
-                                  className="px-2 py-1 bg-white border border-black/15 rounded font-mono-code text-[11px] max-w-[180px]"
-                                >
-                                  <option value="">-- Link AP Later --</option>
-                                  {apInvoices.map((inv) => (
-                                    <option key={inv.DocEntry} value={inv.DocEntry}>
-                                      #{inv.DocNum} ({inv.NumAtCard || inv.DocDate}) · Pending ₹{formatINR(inv.InternalReconPending)}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
+                              {apMode === "SAVE_ONLY" && (
+                                <td className="py-2 px-3">
+                                  <select
+                                    value={row.APDocEntry || ""}
+                                    onChange={(e) => {
+                                      const entry = e.target.value;
+                                      const found = apInvoices.find((a) => String(a.DocEntry) === String(entry));
+                                      setPastedScrips((prev) => {
+                                        const copy = [...prev];
+                                        copy[idx] = {
+                                          ...copy[idx],
+                                          APDocEntry: found ? found.DocEntry : null,
+                                          APDocNum: found ? found.DocNum : null,
+                                          CardCode: found ? found.CardCode : "",
+                                          CardName: found ? found.CardName : "",
+                                          NumAtCard: found ? found.NumAtCard : "",
+                                          APDocDate: found ? found.DocDate : ""
+                                        };
+                                        return copy;
+                                      });
+                                    }}
+                                    className="px-2 py-1 bg-white border border-black/15 rounded font-mono-code text-[11px] max-w-[180px]"
+                                  >
+                                    <option value="">-- Link AP Later --</option>
+                                    {linkableApInvoices.map((inv) => (
+                                      <option key={inv.DocEntry} value={inv.DocEntry}>
+                                        #{inv.DocNum} ({inv.NumAtCard || inv.DocDate}) · Pending ₹{formatINR(inv.InternalReconPending)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                              )}
                               <td className="py-2 px-3 text-center">
                                 <button
                                   type="button"
@@ -1438,7 +1352,7 @@ export default function App() {
                       {submittingAp
                         ? "Posting to SAP..."
                         : apMode === "CREATE_AP"
-                        ? `Create SAP A/P Invoice (₹${formatINR(pastedSummary.netPayable)}) & Save ${pastedSummary.count} Scrips`
+                        ? `Create SAP A/P Invoice (₹${formatINR(pastedSummary.netPayable)}) & Save ${pastedSummary.count} Linked Scrips`
                         : apMode === "SAVE_ONLY"
                         ? `Save ${pastedSummary.count} Pending Scrips (₹${formatINR(pastedSummary.total)}) — Link AP Invoice Later`
                         : `Link ${pastedSummary.count} Scrips (₹${formatINR(pastedSummary.total)}) to Selected A/P Invoice`}
@@ -1446,6 +1360,249 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* SECOND CARD: SAP A/P INVOICES & EXPANDABLE LINKED RoDTEP SCRIPS */}
+            <div className="rp-card p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/[0.08] pb-3">
+                <div>
+                  <span className="sec-label">SAP HANA Live · G/L 370001 (RODTEP Scrip Account) &amp; Linked Scrips</span>
+                  <h3 className="text-[15px] font-extrabold text-[#1a1a1a]">
+                    {glListViewMode === "ALL_AP"
+                      ? `Complete RoDTEP A/P Invoice List (${glAllApRows.length} Invoices · Total ₹${formatINR(glTotalPurchasedFromStart)})`
+                      : glListViewMode === "PENDING_ONLY"
+                      ? `Internal Reconciliation Pending A/P Invoices (${glReconPendingRows.length} Open · Pending ₹${formatINR(glReconPendingTotal)})`
+                      : `All BOE Duty Utilization Credit JEs (${glAllBoeCreditRows.length} Entries)`}
+                  </h3>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setGlListViewMode("PENDING_ONLY")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      glListViewMode === "PENDING_ONLY"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    Pending Recon Only ({glReconPendingRows.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGlListViewMode("ALL_AP")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      glListViewMode === "ALL_AP"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    Complete AP List ({glAllApRows.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGlListViewMode("BOE_CREDITS")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      glListViewMode === "BOE_CREDITS"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    All BOE Credit JEs ({glAllBoeCreditRows.length})
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto max-h-[520px] border border-black/10 rounded-[4px]">
+                {glListViewMode === "BOE_CREDITS" ? (
+                  <table className="w-full text-left border-collapse text-[12px]">
+                    <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
+                      <tr>
+                        <th className="py-2 px-3">#</th>
+                        <th className="py-2 px-3">JE #</th>
+                        <th className="py-2 px-3">Date</th>
+                        <th className="py-2 px-3">BOE / Duty Memo (LineMemo)</th>
+                        <th className="py-2 px-3 text-right">Credit Utilized (₹)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/[0.06] bg-white">
+                      {glAllBoeCreditRows.map((r, idx) => (
+                        <tr key={`${r.TransId}-${r.Line_ID}`} className="hover:bg-[#faf9f7]">
+                          <td className="py-2 px-3 font-mono-code text-[#888]">{idx + 1}</td>
+                          <td className="py-2 px-3 font-mono-code font-bold">#{r.BaseRef}</td>
+                          <td className="py-2 px-3 font-mono-code">{r.RefDate}</td>
+                          <td className="py-2 px-3 font-medium">{r.LineMemo || "-"}</td>
+                          <td className="py-2 px-3 text-right font-mono-code font-bold text-amber-800">
+                            ₹{formatINR(r.OriginalCredit)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className="w-full text-left border-collapse text-[12px]">
+                    <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
+                      <tr>
+                        <th className="py-2 px-3">#</th>
+                        <th className="py-2 px-3">AP #</th>
+                        <th className="py-2 px-3">Date</th>
+                        <th className="py-2 px-3">Vendor</th>
+                        <th className="py-2 px-3">Vendor Ref (NumAtCard)</th>
+                        <th className="py-2 px-3 text-right">Original 370001 Debit</th>
+                        <th className="py-2 px-3 text-right">Pending in SAP (BalDueDeb)</th>
+                        <th className="py-2 px-3 text-right">Linked Scrips Total</th>
+                        <th className="py-2 px-3 text-right">Unlinked Balance</th>
+                        <th className="py-2 px-3 text-center">Linked Scrips / Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/[0.06] bg-white">
+                      {(glListViewMode === "ALL_AP" ? glAllApRows : glReconPendingRows).map((r, idx) => {
+                        const rowKey = `${r.TransId}-${r.Line_ID}`;
+                        const linkedList = scrips.filter(
+                          (s) =>
+                            (r.APDocEntry && Number(s.APDocEntry) === Number(r.APDocEntry)) ||
+                            (r.APDocNum && Number(s.APDocNum) === Number(r.APDocNum))
+                        );
+                        const enteredForAp = Number(
+                          linkedList.reduce((sum, s) => sum + Number(s.ScripAmount || 0), 0).toFixed(2)
+                        );
+                        const origDebit = Number(r.OriginalDebit || 0);
+                        const pendingRecon = Number(r.PendingReconBalance || 0);
+                        const targetAmt = pendingRecon > 0 ? pendingRecon : origDebit;
+                        const unlinkedBalance = Math.max(0, Number((targetAmt - enteredForAp).toFixed(2)));
+                        const isFullyLinked = enteredForAp > 0 && unlinkedBalance <= 0.5;
+                        const isExpanded = !!expandedApDocs[rowKey];
+
+                        return (
+                          <React.Fragment key={rowKey}>
+                            <tr className={`hover:bg-[#faf9f7] ${isExpanded ? "bg-blue-50/40" : ""}`}>
+                              <td className="py-2.5 px-3 font-mono-code text-[#888]">{idx + 1}</td>
+                              <td className="py-2.5 px-3 font-mono-code font-bold text-[#c8102e]">
+                                #{r.APDocNum || r.BaseRef}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono-code">{r.RefDate}</td>
+                              <td className="py-2.5 px-3 font-medium">
+                                {r.CardName} <span className="text-[11px] text-[#777]">({r.CardCode})</span>
+                              </td>
+                              <td className="py-2.5 px-3 font-mono-code">{r.NumAtCard || "-"}</td>
+                              <td className="py-2.5 px-3 text-right font-mono-code font-semibold">
+                                ₹{formatINR(origDebit)}
+                              </td>
+                              <td
+                                className={`py-2.5 px-3 text-right font-mono-code font-bold ${
+                                  pendingRecon > 0 ? "text-emerald-700" : "text-[#999]"
+                                }`}
+                              >
+                                ₹{formatINR(pendingRecon)}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono-code">
+                                {enteredForAp > 0 ? (
+                                  <span className="text-blue-700 font-bold">
+                                    ₹{formatINR(enteredForAp)} ({linkedList.length})
+                                  </span>
+                                ) : (
+                                  <span className="text-[#999]">₹0.00</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono-code font-bold">
+                                {isFullyLinked ? (
+                                  <span className="text-emerald-700">₹0.00 ✓</span>
+                                ) : (
+                                  <span className="text-amber-700">₹{formatINR(unlinkedBalance)}</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                  {linkedList.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleExpandAp(rowKey)}
+                                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                    >
+                                      {isExpanded ? `Hide Scrips (${linkedList.length}) ▲` : `View Scrips (${linkedList.length}) ▼`}
+                                    </button>
+                                  )}
+
+                                  {isFullyLinked ? (
+                                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[10px] font-bold uppercase">
+                                      ✓ Linked
+                                    </span>
+                                  ) : (
+                                    r.APDocEntry && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setApMode("LINK_EXISTING");
+                                          handleSelectExistingAp(String(r.APDocEntry));
+                                          window.scrollTo({ top: 0, behavior: "smooth" });
+                                        }}
+                                        className="px-2.5 py-1 bg-[#1a1a1a] hover:bg-[#c8102e] text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                      >
+                                        + Link Scrips
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+
+                            {/* Expandable Child Table showing all Linked RoDTEP Scrips for this A/P Invoice */}
+                            {isExpanded && linkedList.length > 0 && (
+                              <tr className="bg-[#f8fafc]">
+                                <td colSpan={10} className="p-3 border-l-4 border-l-blue-600">
+                                  <div className="text-[11px] font-bold uppercase tracking-wider text-blue-900 mb-2 flex items-center justify-between">
+                                    <span>
+                                      Linked RoDTEP / RoSCTL Scrips under SAP A/P Invoice #{r.APDocNum || r.BaseRef} ({r.NumAtCard || r.CardName}) — {linkedList.length} Scrips Totaling ₹{formatINR(enteredForAp)}
+                                    </span>
+                                  </div>
+                                  <div className="overflow-x-auto border border-blue-200 rounded bg-white">
+                                    <table className="w-full text-left border-collapse text-[11.5px]">
+                                      <thead className="bg-blue-50 text-[10px] font-bold uppercase tracking-wider text-blue-950 border-b border-blue-200">
+                                        <tr>
+                                          <th className="py-1.5 px-2.5">#</th>
+                                          <th className="py-1.5 px-2.5">RoDTEP Lic No</th>
+                                          <th className="py-1.5 px-2.5">Dated</th>
+                                          <th className="py-1.5 px-2.5">Exporter</th>
+                                          <th className="py-1.5 px-2.5">Scheme</th>
+                                          <th className="py-1.5 px-2.5">Port Code</th>
+                                          <th className="py-1.5 px-2.5 text-right">Scrip Amount (₹)</th>
+                                          <th className="py-1.5 px-2.5 text-right">Utilized on BL (₹)</th>
+                                          <th className="py-1.5 px-2.5 text-right">Available Balance (₹)</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-blue-100">
+                                        {linkedList.map((sc, sIdx) => (
+                                          <tr key={sc.LicNo} className="hover:bg-blue-50/30">
+                                            <td className="py-1.5 px-2.5 font-mono-code text-[#777]">{sIdx + 1}</td>
+                                            <td className="py-1.5 px-2.5 font-mono-code font-bold text-[#1a1a1a]">{sc.LicNo}</td>
+                                            <td className="py-1.5 px-2.5 font-mono-code">{sc.LicDate || "-"}</td>
+                                            <td className="py-1.5 px-2.5">{sc.ExporterName}</td>
+                                            <td className="py-1.5 px-2.5 font-bold text-[10.5px]">{sc.Scheme}</td>
+                                            <td className="py-1.5 px-2.5 font-mono-code">{sc.PortCode}</td>
+                                            <td className="py-1.5 px-2.5 text-right font-mono-code font-semibold">
+                                              ₹{formatINR(sc.ScripAmount)}
+                                            </td>
+                                            <td className="py-1.5 px-2.5 text-right font-mono-code text-amber-700">
+                                              ₹{formatINR(sc.UtilizedAmount)}
+                                            </td>
+                                            <td className="py-1.5 px-2.5 text-right font-mono-code font-bold text-emerald-700">
+                                              ₹{formatINR(sc.BalanceAmount)}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </form>
         )}
@@ -1902,17 +2059,6 @@ export default function App() {
                           <td className="py-2 px-3">{s.ExporterName}</td>
                           <td className="py-2 px-3 font-bold text-[11px]">{s.Scheme}</td>
                           <td className="py-2 px-3 font-mono-code">{s.PortCode}</td>
-                          <td className="py-2 px-3">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                String(s.PortLocation).toUpperCase() === "CHENNAI"
-                                  ? "bg-purple-100 text-purple-900"
-                                  : "bg-blue-100 text-blue-900"
-                              }`}
-                            >
-                              {s.PortLocation}
-                            </span>
-                          </td>
                           <td className="py-2 px-3 font-mono-code">
                             <select
                               value={s.APDocEntry || ""}
@@ -1924,11 +2070,17 @@ export default function App() {
                               }`}
                             >
                               <option value="">-- Unlinked (Link AP Later) --</option>
-                              {apInvoices.map((inv) => (
-                                <option key={inv.DocEntry} value={inv.DocEntry}>
-                                  #{inv.DocNum} | {inv.NumAtCard || inv.DocDate} | ₹{formatINR(inv.InternalReconPending)}
-                                </option>
-                              ))}
+                              {apInvoices
+                                .filter((inv) => {
+                                  if (Number(s.APDocEntry) === Number(inv.DocEntry)) return true;
+                                  const info = apLinkMap[`ENTRY_${inv.DocEntry}`];
+                                  return !info || !info.isFullyLinked;
+                                })
+                                .map((inv) => (
+                                  <option key={inv.DocEntry} value={inv.DocEntry}>
+                                    #{inv.DocNum} | {inv.NumAtCard || inv.DocDate} | ₹{formatINR(inv.InternalReconPending)}
+                                  </option>
+                                ))}
                             </select>
                           </td>
                           <td className="py-2 px-3 text-right font-mono-code">
