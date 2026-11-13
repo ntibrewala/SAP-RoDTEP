@@ -362,7 +362,11 @@ router.get("/scrips", async (req, res) => {
     }
 
     let glReconPendingRows = [];
+    let glAllApRows = [];
+    let glAllBoeCreditRows = [];
     let glReconPendingTotal = 0;
+    let glTotalPurchasedFromStart = 0;
+    let glTotalBoeCreditFromStart = 0;
     try {
       const [jRows] = await db.query(`
         SELECT
@@ -375,30 +379,46 @@ router.get("/scrips", async (req, res) => {
           CAST(j1."Credit" AS DOUBLE) AS "OriginalCredit",
           CAST(j1."BalDueDeb" - j1."BalDueCred" AS DOUBLE) AS "PendingReconBalance",
           CAST((j1."Debit" - j1."Credit") - (j1."BalDueDeb" - j1."BalDueCred") AS DOUBLE) AS "ReconciledAmount",
+          j1."LineMemo",
           p0."DocEntry" AS "APDocEntry",
           p0."DocNum" AS "APDocNum",
+          p0."CANCELED" AS "APCanceled",
           COALESCE(p0."CardCode", j1."ContraAct", '') AS "CardCode",
           COALESCE(p0."CardName", j1."LineMemo", '') AS "CardName",
           COALESCE(p0."NumAtCard", j1."Ref2", '') AS "NumAtCard"
         FROM "JDT1" j1
         LEFT JOIN "OPCH" p0 ON j1."TransType" = '18' AND p0."TransId" = j1."TransId"
         WHERE j1."Account" = '370001'
-          AND (j1."BalDueDeb" <> 0 OR j1."BalDueCred" <> 0)
         ORDER BY j1."RefDate" ASC, j1."TransId" ASC
       `);
-      glReconPendingRows = jRows || [];
+      const allJdt = jRows || [];
+      glAllApRows = allJdt.filter(
+        (r) => String(r.TransType) === "18" && Number(r.OriginalDebit) > 0 && r.APCanceled === "N"
+      );
+      glAllBoeCreditRows = allJdt.filter((r) => Number(r.OriginalCredit) > 0 && String(r.TransType) !== "18");
+      glReconPendingRows = allJdt.filter((r) => Math.abs(Number(r.PendingReconBalance || 0)) > 0.001);
       glReconPendingTotal = Number(
         glReconPendingRows.reduce((sum, r) => sum + Number(r.PendingReconBalance || 0), 0).toFixed(2)
       );
+      glTotalPurchasedFromStart = Number(
+        glAllApRows.reduce((sum, r) => sum + Number(r.OriginalDebit || 0), 0).toFixed(2)
+      );
+      glTotalBoeCreditFromStart = Number(
+        glAllBoeCreditRows.reduce((sum, r) => sum + Number(r.OriginalCredit || 0), 0).toFixed(2)
+      );
     } catch (jErr) {
-      console.warn("[RoDTEP] Failed to query JDT1 370001 internal recon pending:", jErr.message);
+      console.warn("[RoDTEP] Failed to query JDT1 370001 full list:", jErr.message);
     }
 
     res.json({
       scrips: scripsRows,
       utilizations: utilRows,
       glReconPendingRows,
-      glReconPendingTotal
+      glAllApRows,
+      glAllBoeCreditRows,
+      glReconPendingTotal,
+      glTotalPurchasedFromStart,
+      glTotalBoeCreditFromStart
     });
   } catch (err) {
     console.error("[RoDTEP] GET /scrips error:", err.message);

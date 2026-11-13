@@ -242,7 +242,11 @@ export default function App() {
   const [scrips, setScrips] = useState([]);
   const [utilizations, setUtilizations] = useState([]);
   const [glReconPendingRows, setGlReconPendingRows] = useState([]);
+  const [glAllApRows, setGlAllApRows] = useState([]);
+  const [glAllBoeCreditRows, setGlAllBoeCreditRows] = useState([]);
   const [glReconPendingTotal, setGlReconPendingTotal] = useState(0);
+  const [glTotalPurchasedFromStart, setGlTotalPurchasedFromStart] = useState(0);
+  const [glListViewMode, setGlListViewMode] = useState("ALL_AP"); // "ALL_AP" | "PENDING_ONLY" | "BOE_CREDITS"
 
   // --- MODULE 1 STATE (Excel Paste -> Auto-Create AP Invoice) ---
   const [apMode, setApMode] = useState("CREATE_AP"); // "CREATE_AP" or "LINK_EXISTING"
@@ -287,7 +291,10 @@ export default function App() {
       setScrips(scripRes.data?.scrips || []);
       setUtilizations(scripRes.data?.utilizations || []);
       setGlReconPendingRows(scripRes.data?.glReconPendingRows || []);
+      setGlAllApRows(scripRes.data?.glAllApRows || []);
+      setGlAllBoeCreditRows(scripRes.data?.glAllBoeCreditRows || []);
       setGlReconPendingTotal(Number(scripRes.data?.glReconPendingTotal || 0));
+      setGlTotalPurchasedFromStart(Number(scripRes.data?.glTotalPurchasedFromStart || 0));
     } catch (err) {
       console.error("Failed to load RoDTEP data:", err);
       setBanner({
@@ -895,49 +902,112 @@ export default function App() {
         {/* ===================================================================== */}
         {activeTab === "module1" && (
           <form onSubmit={handleSubmitModule1} className="space-y-6">
-            {/* Live G/L 370001 Internal Reconciliation Pending Table from SAP JDT1 */}
+            {/* Complete G/L 370001 List from Start (All 36 AP Invoices, 8 Pending Recon, & 58 BOE Credits) */}
             <div className="rp-card p-5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/[0.08] pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/[0.08] pb-3">
                 <div>
-                  <span className="sec-label">SAP HANA Live · JDT1 (Account 370001 - RODTEP Scrip Account)</span>
+                  <span className="sec-label">SAP HANA Live · G/L 370001 (RODTEP Scrip Account) Complete Ledger from Start</span>
                   <h3 className="text-[15px] font-extrabold text-[#1a1a1a]">
-                    Internal Reconciliation Pending A/P Invoices (Total Pending: ₹{formatINR(glReconPendingTotal)})
+                    {glListViewMode === "ALL_AP"
+                      ? `Complete RoDTEP A/P Invoice List from Start (${glAllApRows.length} Invoices · Total ₹${formatINR(glTotalPurchasedFromStart)})`
+                      : glListViewMode === "PENDING_ONLY"
+                      ? `Internal Reconciliation Pending A/P Invoices (${glReconPendingRows.length} Open · Pending ₹${formatINR(glReconPendingTotal)})`
+                      : `All BOE Duty Utilization Credit JEs from Start (${glAllBoeCreditRows.length} Entries)`}
                   </h3>
                 </div>
-                <span className="text-[11px] font-mono-code text-[#6b6863]">
-                  Click "Link Scrips" on any pending invoice to attach its Excel scrip breakup
-                </span>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setGlListViewMode("ALL_AP")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      glListViewMode === "ALL_AP"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    Complete AP List from Start ({glAllApRows.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGlListViewMode("PENDING_ONLY")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      glListViewMode === "PENDING_ONLY"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    Pending Recon Only ({glReconPendingRows.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGlListViewMode("BOE_CREDITS")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      glListViewMode === "BOE_CREDITS"
+                        ? "bg-[#c8102e] text-white"
+                        : "bg-[#f4f2ef] text-[#444] hover:bg-[#e5e1da]"
+                    }`}
+                  >
+                    All BOE Credit JEs ({glAllBoeCreditRows.length})
+                  </button>
+                </div>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-[12px]">
-                  <thead className="bg-[#f4f2ef] border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
-                    <tr>
-                      <th className="py-2 px-3">AP #</th>
-                      <th className="py-2 px-3">Date</th>
-                      <th className="py-2 px-3">Vendor</th>
-                      <th className="py-2 px-3">Vendor Ref (NumAtCard)</th>
-                      <th className="py-2 px-3 text-right">Original 370001 Debit</th>
-                      <th className="py-2 px-3 text-right">Internally Reconciled</th>
-                      <th className="py-2 px-3 text-right">Pending for Recon (BalDueDeb)</th>
-                      <th className="py-2 px-3 text-right">Scrips Entered</th>
-                      <th className="py-2 px-3 text-center">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-black/[0.06] bg-white">
-                    {glReconPendingRows.length === 0 ? (
+              <div className="overflow-x-auto max-h-[380px] border border-black/10 rounded-[4px]">
+                {glListViewMode === "BOE_CREDITS" ? (
+                  <table className="w-full text-left border-collapse text-[12px]">
+                    <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
                       <tr>
-                        <td colSpan={9} className="py-4 px-3 text-center text-[#888]">
-                          No unreconciled lines found on G/L 370001.
-                        </td>
+                        <th className="py-2 px-3">#</th>
+                        <th className="py-2 px-3">JE #</th>
+                        <th className="py-2 px-3">Date</th>
+                        <th className="py-2 px-3">BOE / Duty Memo (LineMemo)</th>
+                        <th className="py-2 px-3 text-right">Credit Utilized (₹)</th>
                       </tr>
-                    ) : (
-                      glReconPendingRows.map((r) => {
+                    </thead>
+                    <tbody className="divide-y divide-black/[0.06] bg-white">
+                      {glAllBoeCreditRows.map((r, idx) => (
+                        <tr key={`${r.TransId}-${r.Line_ID}`} className="hover:bg-[#faf9f7]">
+                          <td className="py-2 px-3 font-mono-code text-[#888]">{idx + 1}</td>
+                          <td className="py-2 px-3 font-mono-code font-bold">#{r.BaseRef}</td>
+                          <td className="py-2 px-3 font-mono-code">{r.RefDate}</td>
+                          <td className="py-2 px-3 font-medium">{r.LineMemo || "-"}</td>
+                          <td className="py-2 px-3 text-right font-mono-code font-bold text-amber-800">
+                            ₹{formatINR(r.OriginalCredit)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className="w-full text-left border-collapse text-[12px]">
+                    <thead className="bg-[#f4f2ef] sticky top-0 z-10 border-b border-black/10 text-[10.5px] font-bold uppercase tracking-wider text-[#555]">
+                      <tr>
+                        <th className="py-2 px-3">#</th>
+                        <th className="py-2 px-3">AP #</th>
+                        <th className="py-2 px-3">Date</th>
+                        <th className="py-2 px-3">Vendor</th>
+                        <th className="py-2 px-3">Vendor Ref (NumAtCard)</th>
+                        <th className="py-2 px-3 text-right">Original 370001 Debit</th>
+                        <th className="py-2 px-3 text-right">Reconciled in SAP</th>
+                        <th className="py-2 px-3 text-right">Pending Recon (BalDueDeb)</th>
+                        <th className="py-2 px-3 text-right">Scrips Entered</th>
+                        <th className="py-2 px-3 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/[0.06] bg-white">
+                      {(glListViewMode === "ALL_AP" ? glAllApRows : glReconPendingRows).map((r, idx) => {
                         const enteredForAp = scrips
-                          .filter((s) => Number(s.APDocEntry) === Number(r.APDocEntry) || Number(s.APDocNum) === Number(r.APDocNum))
+                          .filter(
+                            (s) =>
+                              Number(s.APDocEntry) === Number(r.APDocEntry) ||
+                              Number(s.APDocNum) === Number(r.APDocNum)
+                          )
                           .reduce((sum, s) => sum + Number(s.ScripAmount || 0), 0);
+                        const isPending = Number(r.PendingReconBalance || 0) > 0;
                         return (
                           <tr key={`${r.TransId}-${r.Line_ID}`} className="hover:bg-[#faf9f7]">
+                            <td className="py-2 px-3 font-mono-code text-[#888]">{idx + 1}</td>
                             <td className="py-2 px-3 font-mono-code font-bold text-[#c8102e]">
                               #{r.APDocNum || r.BaseRef}
                             </td>
@@ -946,13 +1016,17 @@ export default function App() {
                               {r.CardName} <span className="text-[11px] text-[#777]">({r.CardCode})</span>
                             </td>
                             <td className="py-2 px-3 font-mono-code">{r.NumAtCard || "-"}</td>
-                            <td className="py-2 px-3 text-right font-mono-code">
+                            <td className="py-2 px-3 text-right font-mono-code font-semibold">
                               ₹{formatINR(r.OriginalDebit)}
                             </td>
                             <td className="py-2 px-3 text-right font-mono-code text-[#666]">
                               ₹{formatINR(r.ReconciledAmount)}
                             </td>
-                            <td className="py-2 px-3 text-right font-mono-code font-bold text-emerald-700">
+                            <td
+                              className={`py-2 px-3 text-right font-mono-code font-bold ${
+                                isPending ? "text-emerald-700" : "text-[#999]"
+                              }`}
+                            >
                               ₹{formatINR(r.PendingReconBalance)}
                             </td>
                             <td className="py-2 px-3 text-right font-mono-code">
@@ -978,12 +1052,13 @@ export default function App() {
                             </td>
                           </tr>
                         );
-                      })
-                    )}
-                  </tbody>
-                </table>
+                      })}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
+
             <div className="rp-card p-6 space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-black/[0.08] pb-4">
                 <div>
