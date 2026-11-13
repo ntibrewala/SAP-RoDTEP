@@ -455,9 +455,9 @@ router.get("/scrips", async (req, res) => {
           CAST(j1."BalDueCred" AS DOUBLE) AS "BalDueCred",
           CAST(j1."BalDueDeb" - j1."BalDueCred" AS DOUBLE) AS "PendingReconBalance",
           CAST((j1."Debit" - j1."Credit") - (j1."BalDueDeb" - j1."BalDueCred") AS DOUBLE) AS "ReconciledAmount",
-          j1."LineMemo",
-          COALESCE(j1."Ref1", '') AS "Ref1",
-          COALESCE(j1."Ref2", '') AS "Ref2",
+          COALESCE(NULLIF(j1."LineMemo", ''), j0."Memo", '') AS "LineMemo",
+          COALESCE(NULLIF(j1."Ref1", ''), j0."Ref1", '') AS "Ref1",
+          COALESCE(NULLIF(j1."Ref2", ''), j0."Ref2", '') AS "Ref2",
           p0."DocEntry" AS "APDocEntry",
           p0."DocNum" AS "APDocNum",
           p0."CANCELED" AS "APCanceled",
@@ -465,6 +465,7 @@ router.get("/scrips", async (req, res) => {
           COALESCE(p0."CardName", j1."LineMemo", '') AS "CardName",
           COALESCE(p0."NumAtCard", j1."Ref2", '') AS "NumAtCard"
         FROM "JDT1" j1
+        LEFT JOIN "OJDT" j0 ON j0."TransId" = j1."TransId"
         LEFT JOIN "OPCH" p0 ON j1."TransType" = '18' AND p0."TransId" = j1."TransId"
         WHERE j1."Account" = '370001'
         ORDER BY j1."RefDate" ASC, j1."TransId" ASC
@@ -478,7 +479,14 @@ router.get("/scrips", async (req, res) => {
         (r) => String(r.TransType) === "18" && r.APCanceled === "N" && Number(r.PendingReconBalance || 0) > 0.001
       );
 
-      // Cross-match manual JEs (TransType = '30') in SAP JDT1 against utilRows so already-posted JEs are always detected
+      // Compute group total per GRPO/BL to also match JEs by exact BOE duty amount
+      const groupTotalsByGrpoOrBl = {};
+      for (const u of utilRows || []) {
+        const gKey = u.GRPODocEntry ? `G_${u.GRPODocEntry}` : `B_${String(u.BLNo || "").trim().toUpperCase()}`;
+        groupTotalsByGrpoOrBl[gKey] = Number(((groupTotalsByGrpoOrBl[gKey] || 0) + Number(u.AmountUsed || 0)).toFixed(2));
+      }
+
+      // Cross-match manual JEs (TransType = '30') in SAP JDT1/OJDT against utilRows so already-posted JEs are always detected
       const manualJes = allJdt.filter((r) => String(r.TransType) === "30");
       utilRows = (utilRows || []).map((u) => {
         let jeNum = u.JENum || null;
@@ -497,6 +505,8 @@ router.get("/scrips", async (req, res) => {
         const uBl = String(u.BLNo || "").trim().toUpperCase();
         const uBoe = String(u.BOENo || "").trim().toUpperCase();
         const uGrpo = u.GRPODocNum ? String(u.GRPODocNum).trim() : "";
+        const gKey = u.GRPODocEntry ? `G_${u.GRPODocEntry}` : `B_${uBl}`;
+        const groupAmt = groupTotalsByGrpoOrBl[gKey] || Number(u.DraftBOEAmount || 0);
 
         const matchedSapJe = manualJes.find((j) => {
           if (jeTransId && Number(j.TransId) === Number(jeTransId)) return true;
@@ -506,7 +516,9 @@ router.get("/scrips", async (req, res) => {
           const memo = String(j.LineMemo || "").toUpperCase();
           if (uBl && (r1 === uBl || memo.includes(uBl))) return true;
           if (uBoe && uBoe !== "DRAFT" && (r1 === uBoe || memo.includes(uBoe))) return true;
-          if (uGrpo && (r2.includes("GRPO#" + uGrpo) || memo.includes("GRPO #" + uGrpo))) return true;
+          if (uGrpo && (r2 === uGrpo || r2.includes("GRPO#" + uGrpo) || memo.includes("GRPO #" + uGrpo))) return true;
+          const jeLineAmt = Math.max(Number(j.OriginalCredit || 0), Number(j.OriginalDebit || 0));
+          if (groupAmt > 100 && Math.abs(jeLineAmt - groupAmt) <= 0.5) return true;
           return false;
         });
 
@@ -516,7 +528,7 @@ router.get("/scrips", async (req, res) => {
           reconciledInSap =
             Number(matchedSapJe.BalDueCred || 0) <= 0.5 && Number(matchedSapJe.BalDueDeb || 0) <= 0.5;
           jeDirectionPosted =
-            Number(matchedSapJe.Credit || 0) > 0
+            Number(matchedSapJe.OriginalCredit || 0) > 0
               ? "CREDIT_370001_DEBIT_DUTY"
               : "DEBIT_370001_CREDIT_DUTY";
         }
@@ -1346,17 +1358,24 @@ router.post("/post-grpo-je", async (req, res) => {
         const cleanBl = String(blNo || "").trim();
         const cleanBoe = String(boeNo || "").trim();
         const [existingJes] = await db.query(
-          `SELECT TOP 1 "TransId", "BaseRef", CAST("Credit" AS DOUBLE) AS "Credit", CAST("Debit" AS DOUBLE) AS "Debit"
-           FROM "JDT1"
-           WHERE "Account" = '370001'
-             AND "TransType" = '30'
+          `SELECT TOP 1 j1."TransId", j1."BaseRef", CAST(j1."Credit" AS DOUBLE) AS "Credit", CAST(j1."Debit" AS DOUBLE) AS "Debit"
+           FROM "JDT1" j1
+           LEFT JOIN "OJDT" j0 ON j0."TransId" = j1."TransId"
+           WHERE j1."Account" = '370001'
+             AND j1."TransType" = '30'
              AND (
-               (? <> '' AND ("Ref1" = ? OR "LineMemo" LIKE '%' || ? || '%'))
-               OR (? <> '' AND ("Ref1" = ? OR "LineMemo" LIKE '%' || ? || '%'))
-               OR (? > 0 AND "LineMemo" LIKE '%GRPO #' || TO_VARCHAR(?) || '%')
+               (? <> '' AND (j1."Ref1" = ? OR j0."Ref1" = ? OR j1."LineMemo" LIKE '%' || ? || '%' OR j0."Memo" LIKE '%' || ? || '%'))
+               OR (? <> '' AND (j1."Ref1" = ? OR j0."Ref1" = ? OR j1."LineMemo" LIKE '%' || ? || '%' OR j0."Memo" LIKE '%' || ? || '%'))
+               OR (? > 0 AND (j0."Ref2" = TO_VARCHAR(?) OR j1."Ref2" LIKE '%' || TO_VARCHAR(?) || '%' OR j1."LineMemo" LIKE '%GRPO #' || TO_VARCHAR(?) || '%'))
+               OR (ABS(j1."Credit" - ?) <= 0.5 OR ABS(j1."Debit" - ?) <= 0.5)
              )
-           ORDER BY "TransId" DESC`,
-          [cleanBl, cleanBl, cleanBl, cleanBoe, cleanBoe, cleanBoe, Number(grpoDocNum || 0), Number(grpoDocNum || 0)]
+           ORDER BY j1."TransId" DESC`,
+          [
+            cleanBl, cleanBl, cleanBl, cleanBl, cleanBl,
+            cleanBoe, cleanBoe, cleanBoe, cleanBoe, cleanBoe,
+            Number(grpoDocNum || 0), Number(grpoDocNum || 0), Number(grpoDocNum || 0), Number(grpoDocNum || 0),
+            jeAmt, jeAmt
+          ]
         );
         if (existingJes && existingJes.length > 0) {
           transId = existingJes[0].TransId;
