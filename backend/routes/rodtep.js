@@ -458,6 +458,9 @@ router.get("/scrips", async (req, res) => {
           COALESCE(NULLIF(j1."LineMemo", ''), j0."Memo", '') AS "LineMemo",
           COALESCE(NULLIF(j1."Ref1", ''), j0."Ref1", '') AS "Ref1",
           COALESCE(NULLIF(j1."Ref2", ''), j0."Ref2", '') AS "Ref2",
+          COALESCE(j0."Memo", '') AS "HeaderMemo",
+          COALESCE(j0."Ref1", '') AS "HeaderRef1",
+          COALESCE(j0."Ref2", '') AS "HeaderRef2",
           p0."DocEntry" AS "APDocEntry",
           p0."DocNum" AS "APDocNum",
           p0."CANCELED" AS "APCanceled",
@@ -486,8 +489,8 @@ router.get("/scrips", async (req, res) => {
         groupTotalsByGrpoOrBl[gKey] = Number(((groupTotalsByGrpoOrBl[gKey] || 0) + Number(u.AmountUsed || 0)).toFixed(2));
       }
 
-      // Cross-match manual JEs (TransType = '30') in SAP JDT1/OJDT against utilRows so already-posted JEs are always detected
-      const manualJes = allJdt.filter((r) => String(r.TransType) === "30");
+      // Cross-match non-AP JEs (TransType <> '18') in SAP JDT1/OJDT against utilRows so already-posted JEs are always detected
+      const manualJes = allJdt.filter((r) => String(r.TransType) !== "18").slice().reverse();
       utilRows = (utilRows || []).map((u) => {
         let jeNum = u.JENum || null;
         let jeTransId = u.JETransId || null;
@@ -510,15 +513,18 @@ router.get("/scrips", async (req, res) => {
 
         const matchedSapJe = manualJes.find((j) => {
           if (jeTransId && Number(j.TransId) === Number(jeTransId)) return true;
-          if (jeNum && String(j.BaseRef) === String(jeNum)) return true;
-          const r1 = String(j.Ref1 || "").trim().toUpperCase();
-          const r2 = String(j.Ref2 || "").trim().toUpperCase();
-          const memo = String(j.LineMemo || "").toUpperCase();
-          if (uBl && (r1 === uBl || memo.includes(uBl))) return true;
-          if (uBoe && uBoe !== "DRAFT" && (r1 === uBoe || memo.includes(uBoe))) return true;
-          if (uGrpo && (r2 === uGrpo || r2.includes("GRPO#" + uGrpo) || memo.includes("GRPO #" + uGrpo))) return true;
+          if (jeNum && (String(j.BaseRef) === String(jeNum) || String(j.TransId) === String(jeNum))) return true;
+          const allText = `${j.Ref1 || ""} ${j.Ref2 || ""} ${j.LineMemo || ""} ${j.HeaderRef1 || ""} ${j.HeaderRef2 || ""} ${j.HeaderMemo || ""}`.toUpperCase();
+          if (uBl && allText.includes(uBl)) return true;
+          if (uBoe && uBoe !== "DRAFT" && allText.includes(uBoe)) return true;
+          if (uGrpo && (
+            String(j.Ref2 || "").trim() === uGrpo ||
+            String(j.HeaderRef2 || "").trim() === uGrpo ||
+            allText.includes("GRPO#" + uGrpo) ||
+            allText.includes("GRPO #" + uGrpo)
+          )) return true;
           const jeLineAmt = Math.max(Number(j.OriginalCredit || 0), Number(j.OriginalDebit || 0));
-          if (groupAmt > 100 && Math.abs(jeLineAmt - groupAmt) <= 0.5) return true;
+          if (groupAmt > 100 && Math.abs(jeLineAmt - groupAmt) <= 1.0) return true;
           return false;
         });
 
@@ -533,8 +539,12 @@ router.get("/scrips", async (req, res) => {
               : "DEBIT_370001_CREDIT_DUTY";
         }
 
+        const isPosted = !!(jeNum || jeTransId);
         return {
           ...u,
+          JEPosted: isPosted,
+          PostedFlag: isPosted ? "Yes" : "No",
+          ReconciledFlag: reconciledInSap ? "Yes" : "No",
           JENum: jeNum,
           JETransId: jeTransId,
           ReconciledInSAP: reconciledInSap,

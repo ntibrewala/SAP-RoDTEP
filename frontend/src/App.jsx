@@ -520,6 +520,69 @@ export default function App() {
     const usedUtilIds = new Set();
     const rows = [];
 
+    const findMatchedSapBoeJe = ({ matchingUtils, gBl, gBoe, gNum, totalAttached, draftBoe }) => {
+      const utilWithJe = (matchingUtils || []).find((u) => u.JENum || u.JETransId);
+      const targetAmt = Number(totalAttached || draftBoe || 0);
+      const cleanBl = String(gBl || "").trim().toUpperCase();
+      const cleanBoe = String(gBoe || "").trim().toUpperCase();
+      const cleanGrpo = gNum ? String(gNum).trim() : "";
+
+      const matchedCreditRow = (glAllBoeCreditRows || [])
+        .slice()
+        .reverse()
+        .find((j) => {
+          if (utilWithJe?.JETransId && Number(j.TransId) === Number(utilWithJe.JETransId)) return true;
+          if (
+            utilWithJe?.JENum &&
+            (String(j.BaseRef) === String(utilWithJe.JENum) || String(j.TransId) === String(utilWithJe.JENum))
+          ) {
+            return true;
+          }
+          const text = `${j.Ref1 || ""} ${j.Ref2 || ""} ${j.LineMemo || ""} ${j.HeaderRef1 || ""} ${j.HeaderRef2 || ""} ${j.HeaderMemo || ""}`.toUpperCase();
+          if (cleanBl && text.includes(cleanBl)) return true;
+          if (cleanBoe && cleanBoe !== "DRAFT" && text.includes(cleanBoe)) return true;
+          if (
+            cleanGrpo &&
+            (String(j.Ref2 || "").trim() === cleanGrpo ||
+              text.includes("GRPO#" + cleanGrpo) ||
+              text.includes("GRPO #" + cleanGrpo))
+          ) {
+            return true;
+          }
+          const credAmt = Math.max(Number(j.OriginalCredit || 0), Number(j.OriginalDebit || 0));
+          if (targetAmt > 100 && Math.abs(credAmt - targetAmt) <= 1.0) return true;
+          return false;
+        });
+
+      if (matchedCreditRow) {
+        const isRecon =
+          Number(matchedCreditRow.BalDueCred ?? 0) <= 0.5 &&
+          Number(matchedCreditRow.BalDueDeb ?? 0) <= 0.5;
+        return {
+          JENum: matchedCreditRow.BaseRef || matchedCreditRow.TransId,
+          JETransId: matchedCreditRow.TransId,
+          JEDate: matchedCreditRow.RefDate || utilWithJe?.JEDate || null,
+          ReconciledInSAP: isRecon || !!utilWithJe?.ReconciledInSAP
+        };
+      }
+
+      if (utilWithJe) {
+        return {
+          JENum: utilWithJe.JENum || utilWithJe.JETransId,
+          JETransId: utilWithJe.JETransId || utilWithJe.JENum,
+          JEDate: utilWithJe.JEDate || null,
+          ReconciledInSAP: !!utilWithJe.ReconciledInSAP
+        };
+      }
+
+      return {
+        JENum: null,
+        JETransId: null,
+        JEDate: null,
+        ReconciledInSAP: false
+      };
+    };
+
     for (const g of grpos || []) {
       const gEntry = Number(g.GRPODocEntry || 0);
       const gNum = Number(g.GRPODocNum || 0);
@@ -548,7 +611,19 @@ export default function App() {
         : Number(g.BoEValue || 0);
       const isAttached = matchingUtils.length > 0 && totalAttached > 0;
 
-      const postedJeUtil = matchingUtils.find((u) => u.JENum || u.JETransId);
+      const resolvedBl = (matchingUtils[0] && matchingUtils[0].BLNo) ? matchingUtils[0].BLNo : (g.BLNo || "");
+      const resolvedBoe = g.BOENo || (matchingUtils[0] ? matchingUtils[0].BOENo : "");
+      const jeInfo = isAttached
+        ? findMatchedSapBoeJe({
+            matchingUtils,
+            gBl: resolvedBl,
+            gBoe: resolvedBoe,
+            gNum: g.GRPODocNum,
+            totalAttached,
+            draftBoe
+          })
+        : { JENum: null, JETransId: null, JEDate: null, ReconciledInSAP: false };
+
       rows.push({
         rowKey: `GRPO_${g.GRPODocEntry}`,
         GRPODocEntry: g.GRPODocEntry,
@@ -557,16 +632,16 @@ export default function App() {
         CardCode: g.CardCode,
         CardName: g.CardName,
         VendorRefNo: g.VendorRefNo,
-        BLNo: (matchingUtils[0] && matchingUtils[0].BLNo) ? matchingUtils[0].BLNo : (g.BLNo || ""),
-        BOENo: g.BOENo || (matchingUtils[0] ? matchingUtils[0].BOENo : ""),
+        BLNo: resolvedBl,
+        BOENo: resolvedBoe,
         DraftBOEAmount: draftBoe,
         totalAttached,
         attachedScrips: matchingUtils,
         isAttached,
-        JENum: postedJeUtil ? postedJeUtil.JENum || postedJeUtil.JETransId : null,
-        JETransId: postedJeUtil ? postedJeUtil.JETransId || postedJeUtil.JENum : null,
-        JEDate: postedJeUtil ? postedJeUtil.JEDate : null,
-        ReconciledInSAP: postedJeUtil ? !!postedJeUtil.ReconciledInSAP : false
+        JENum: jeInfo.JENum,
+        JETransId: jeInfo.JETransId,
+        JEDate: jeInfo.JEDate,
+        ReconciledInSAP: jeInfo.ReconciledInSAP
       });
     }
 
@@ -587,7 +662,14 @@ export default function App() {
         list.reduce((sum, u) => sum + Number(u.AmountUsed || 0), 0).toFixed(2)
       );
       const draftBoe = Math.max(...list.map((u) => Number(u.DraftBOEAmount || 0)));
-      const postedJeUtil = list.find((u) => u.JENum || u.JETransId);
+      const jeInfo = findMatchedSapBoeJe({
+        matchingUtils: list,
+        gBl: first.BLNo,
+        gBoe: first.BOENo || "",
+        gNum: first.GRPODocNum,
+        totalAttached,
+        draftBoe
+      });
       rows.push({
         rowKey: `BL_${blKey}`,
         GRPODocEntry: first.GRPODocEntry || null,
@@ -602,10 +684,10 @@ export default function App() {
         totalAttached,
         attachedScrips: list,
         isAttached: true,
-        JENum: postedJeUtil ? postedJeUtil.JENum || postedJeUtil.JETransId : null,
-        JETransId: postedJeUtil ? postedJeUtil.JETransId || postedJeUtil.JENum : null,
-        JEDate: postedJeUtil ? postedJeUtil.JEDate : null,
-        ReconciledInSAP: postedJeUtil ? !!postedJeUtil.ReconciledInSAP : false
+        JENum: jeInfo.JENum,
+        JETransId: jeInfo.JETransId,
+        JEDate: jeInfo.JEDate,
+        ReconciledInSAP: jeInfo.ReconciledInSAP
       });
     }
 
@@ -615,7 +697,7 @@ export default function App() {
     });
 
     return { grpoAttachmentRows: rows, unattachedGrpos: unattached };
-  }, [grpos, utilizations]);
+  }, [grpos, utilizations, glAllBoeCreditRows]);
 
   // Existing LicNo set to warn on duplicates in Module 1
   const existingLicSet = useMemo(() => {
@@ -2411,6 +2493,8 @@ export default function App() {
                       <th className="py-2.5 px-3">BOE No</th>
                       <th className="py-2.5 px-3 text-right">Draft BOE / Duty Amt</th>
                       <th className="py-2.5 px-3 text-right">Scrips Attached (₹)</th>
+                      <th className="py-2.5 px-3 text-center">Posted</th>
+                      <th className="py-2.5 px-3 text-center">Reconciled</th>
                       <th className="py-2.5 px-3 text-center">Attached Scrips / Action</th>
                     </tr>
                   </thead>
@@ -2426,7 +2510,7 @@ export default function App() {
                       if (filteredRows.length === 0) {
                         return (
                           <tr>
-                            <td colSpan={9} className="py-8 text-center text-[#8a8780]">
+                            <td colSpan={11} className="py-8 text-center text-[#8a8780]">
                               {grpoListViewMode === "ATTACHED_ONLY"
                                 ? "No GRPOs or BLs have attached RoDTEP scrips yet. Select a GRPO above, check scrips, and click Attach."
                                 : "No matching Import GRPOs found."}
@@ -2470,6 +2554,31 @@ export default function App() {
                                   <span className="text-[#999]">₹0.00</span>
                                 )}
                               </td>
+                              {/* Flag 1: Posted (Yes / No) */}
+                              <td className="py-2.5 px-3 text-center">
+                                {r.JENum ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-100 text-emerald-900 border border-emerald-400 rounded text-[10.5px] font-extrabold uppercase whitespace-nowrap">
+                                    Yes (JE #{r.JENum})
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2.5 py-1 bg-rose-100 text-rose-800 border border-rose-300 rounded text-[10.5px] font-extrabold uppercase whitespace-nowrap">
+                                    No
+                                  </span>
+                                )}
+                              </td>
+                              {/* Flag 2: Reconciled (Yes / No) */}
+                              <td className="py-2.5 px-3 text-center">
+                                {r.ReconciledInSAP ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-100 text-emerald-900 border border-emerald-400 rounded text-[10.5px] font-extrabold uppercase whitespace-nowrap">
+                                    Yes
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2.5 py-1 bg-amber-100 text-amber-900 border border-amber-300 rounded text-[10.5px] font-extrabold uppercase whitespace-nowrap">
+                                    No
+                                  </span>
+                                )}
+                              </td>
+                              {/* 3 Color-Coded Action / Status Options */}
                               <td className="py-2.5 px-3 text-center">
                                 <div className="flex items-center justify-center gap-1.5 flex-wrap">
                                   {r.isAttached ? (
@@ -2500,40 +2609,46 @@ export default function App() {
                                           ? `Hide Scrips (${r.attachedScrips.length}) ▲`
                                           : `View Scrips (${r.attachedScrips.length}) ▼`}
                                       </button>
-                                      {r.JENum ? (
-                                        <>
-                                          <span className="px-2 py-1 bg-purple-100 text-purple-900 border border-purple-300 rounded text-[10px] font-bold uppercase whitespace-nowrap">
-                                            ✓ JE #{r.JENum} {r.ReconciledInSAP ? "(Reconciled)" : "(Posted)"}
-                                          </span>
-                                          {!r.ReconciledInSAP && (
-                                            <button
-                                              type="button"
-                                              disabled={submittingJe}
-                                              onClick={() => handleReconcileExistingJe(r)}
-                                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
-                                              title="Reconcile this already-posted JE with the linked A/P Invoice(s) on G/L 370001 without posting a duplicate JE"
-                                            >
-                                              Reconcile JE #{r.JENum}
-                                            </button>
-                                          )}
-                                        </>
-                                      ) : (
+
+                                      {/* OPTION 3: Posted = Yes & Reconciled = Yes -> Locked · Posted JE and Reconciled (Purple) */}
+                                      {r.JENum && r.ReconciledInSAP ? (
+                                        <span
+                                          className="px-2.5 py-1 bg-purple-700 text-white border border-purple-900 rounded text-[10.5px] font-bold uppercase tracking-wider whitespace-nowrap select-none"
+                                          title="Both SAP Journal Entry and Internal Reconciliation on G/L 370001 are completed and locked"
+                                        >
+                                          🔒 Locked · Posted JE and Reconciled
+                                        </span>
+                                      ) : r.JENum && !r.ReconciledInSAP ? (
+                                        /* OPTION 2: Posted = Yes & Reconciled = No -> Reconcile (Amber/Orange) */
                                         <button
                                           type="button"
-                                          onClick={() => handleOpenJeForm(r)}
-                                          className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                          disabled={submittingJe}
+                                          onClick={() => handleReconcileExistingJe(r)}
+                                          className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                          title="JE is already posted in SAP. Click to reconcile JE with linked A/P Invoice(s) on G/L 370001"
                                         >
-                                          {activeJeGrpoKey === r.rowKey ? "Close JE ▲" : "Post JE & Reconcile"}
+                                          {submittingJe ? "Reconciling..." : "Reconcile"}
                                         </button>
+                                      ) : (
+                                        /* OPTION 1: Posted = No & Reconciled = No -> Post JE and Reconcile (Emerald Green) + Detach All */
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleOpenJeForm(r)}
+                                            className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                          >
+                                            {activeJeGrpoKey === r.rowKey ? "Close JE ▲" : "Post JE and Reconcile"}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDetachAllForGrpo(r)}
+                                            className="px-2 py-1 bg-gray-200 hover:bg-red-600 text-[#333] hover:text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                            title="Detach all scrips from this GRPO/BL and restore their balance"
+                                          >
+                                            ✕ Detach All
+                                          </button>
+                                        </>
                                       )}
-                                      <button
-                                        type="button"
-                                        onClick={() => handleDetachAllForGrpo(r)}
-                                        className="px-2 py-1 bg-gray-200 hover:bg-red-600 text-[#333] hover:text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
-                                        title="Detach all scrips from this GRPO/BL and restore their balance"
-                                      >
-                                        ✕ Detach All
-                                      </button>
                                     </>
                                   ) : (
                                     <button
@@ -2558,7 +2673,7 @@ export default function App() {
                             {/* Inline Panel to Post Custom Duty <-> RoDTEP 370001 JE & Reconcile with AP Invoice */}
                             {activeJeGrpoKey === r.rowKey && (
                               <tr className="bg-emerald-50/70">
-                                <td colSpan={9} className="p-4 border-l-4 border-l-emerald-700">
+                                <td colSpan={11} className="p-4 border-l-4 border-l-emerald-700">
                                   <div className="bg-white p-4 rounded-[6px] border border-emerald-300 space-y-4">
                                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/10 pb-2">
                                       <div>
@@ -2765,7 +2880,7 @@ export default function App() {
                             {/* Expandable Child Row listing all RoDTEP Scrips attached to this GRPO / BL */}
                             {isExpanded && r.attachedScrips.length > 0 && (
                               <tr className="bg-[#f8fafc]">
-                                <td colSpan={9} className="p-3 border-l-4 border-l-blue-600">
+                                <td colSpan={11} className="p-3 border-l-4 border-l-blue-600">
                                   <div className="text-[11px] font-bold uppercase tracking-wider text-blue-900 mb-2">
                                     Attached RoDTEP / RoSCTL Scrips for{" "}
                                     {r.GRPODocNum ? `GRPO #${r.GRPODocNum}` : ""} (BL: {r.BLNo || "—"}) —{" "}
@@ -2806,13 +2921,19 @@ export default function App() {
                                               ₹{formatINR(u.AmountUsed)}
                                             </td>
                                             <td className="py-1.5 px-2.5 text-center">
-                                              <button
-                                                type="button"
-                                                onClick={() => handleDeleteUtilization(u.Id)}
-                                                className="text-red-600 hover:underline text-[11px] font-bold cursor-pointer"
-                                              >
-                                                Detach
-                                              </button>
+                                              {r.JENum ? (
+                                                <span className="text-purple-700 text-[10.5px] font-bold uppercase">
+                                                  🔒 Locked
+                                                </span>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleDeleteUtilization(u.Id)}
+                                                  className="text-red-600 hover:underline text-[11px] font-bold cursor-pointer"
+                                                >
+                                                  Detach
+                                                </button>
+                                              )}
                                             </td>
                                           </tr>
                                         ))}
