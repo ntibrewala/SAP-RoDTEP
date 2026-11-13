@@ -567,7 +567,7 @@ export default function App() {
           JENum: matchedCreditRow.BaseRef || matchedCreditRow.TransId,
           JETransId: matchedCreditRow.TransId,
           JEDate: matchedCreditRow.RefDate || utilWithJe?.JEDate || null,
-          ReconciledInSAP: isRecon || isMarkedReconInUtils
+          ReconciledInSAP: isRecon
         };
       }
 
@@ -1189,7 +1189,7 @@ export default function App() {
       });
       const d = res.data;
       setBanner({
-        type: d.reconStatus?.reconciled ? "success" : "info",
+        type: d.reconStatus?.reconciled ? "success" : "error",
         text: d.reconStatus?.message || `Processed reconciliation for JE #${r.JENum}.`
       });
       await fetchAllData();

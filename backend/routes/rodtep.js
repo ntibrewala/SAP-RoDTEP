@@ -531,9 +531,9 @@ router.get("/scrips", async (req, res) => {
         if (matchedSapJe) {
           jeNum = matchedSapJe.BaseRef || matchedSapJe.TransId;
           jeTransId = matchedSapJe.TransId;
+          // True SAP source of truth: only mark Reconciled = Yes if BalDueCred & BalDueDeb in SAP JDT1 are actually 0!
           reconciledInSap =
-            reconciledInSap ||
-            (Number(matchedSapJe.BalDueCred || 0) <= 0.5 && Number(matchedSapJe.BalDueDeb || 0) <= 0.5);
+            Number(matchedSapJe.BalDueCred || 0) <= 0.5 && Number(matchedSapJe.BalDueDeb || 0) <= 0.5;
           jeDirectionPosted =
             Number(matchedSapJe.OriginalCredit || 0) > 0
               ? "CREDIT_370001_DEBIT_DUTY"
@@ -1179,12 +1179,13 @@ router.get("/custom-duty-accounts", async (req, res) => {
   }
 });
 
-// Helper function to execute SAP Internal Reconciliation on G/L 370001 for an existing JE TransId / JdtNum
+// Helper function to execute SAP Internal Reconciliation on G/L 370001 strictly via SAP Service Layer
 async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconBreakdown = [] }) {
   const reconStatus = { attempted: true, reconciled: false, message: "" };
   try {
     const [jeLineRows] = await db.query(
-      `SELECT "TransId", "Line_ID", CAST("Credit" AS DOUBLE) AS "Credit", CAST("Debit" AS DOUBLE) AS "Debit",
+      `SELECT "TransId", "Line_ID", "TransType", "CreatedBy",
+              CAST("Credit" AS DOUBLE) AS "Credit", CAST("Debit" AS DOUBLE) AS "Debit",
               CAST("BalDueCred" AS DOUBLE) AS "BalDueCred", CAST("BalDueDeb" AS DOUBLE) AS "BalDueDeb"
        FROM "JDT1"
        WHERE ("TransId" = ? OR "BaseRef" = ?) AND "Account" = '370001'`,
@@ -1198,7 +1199,7 @@ async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconB
 
     const jeLine = jeLineRows[0];
     if (Number(jeLine.Debit || 0) > 0 && Number(jeLine.Credit || 0) === 0) {
-      reconStatus.message = `JE #${jdtNum || transId} was posted as a DEBIT on 370001. Because A/P Invoices are also DEBITs on 370001, SAP can only reconcile a CREDIT on 370001 against an A/P Invoice DEBIT.`;
+      reconStatus.message = `JE #${jdtNum || transId} was posted as a DEBIT on 370001. SAP can only reconcile a CREDIT on 370001 against an A/P Invoice DEBIT.`;
       return reconStatus;
     }
 
@@ -1210,7 +1211,8 @@ async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconB
     }
 
     const [openApLines] = await db.query(`
-      SELECT j1."TransId", j1."Line_ID", CAST(j1."BalDueDeb" AS DOUBLE) AS "BalDueDeb",
+      SELECT j1."TransId", j1."Line_ID", j1."TransType", j1."CreatedBy",
+             CAST(j1."BalDueDeb" AS DOUBLE) AS "BalDueDeb",
              p0."DocEntry", p0."DocNum", p0."NumAtCard"
       FROM "JDT1" j1
       INNER JOIN "OPCH" p0 ON p0."TransId" = j1."TransId"
@@ -1258,11 +1260,14 @@ async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconB
       const useRecon = Number(Math.min(availDeb, wantedAmt, remainingToRecon).toFixed(2));
       if (useRecon > 0) {
         reconRows.push({
+          Selected: "tYES",
           ShortName: "370001",
           TransId: Number(apLine.TransId),
           TransRowId: Number(apLine.Line_ID),
-          ReconcileAmount: useRecon,
-          CreditOrDebit: "codDebit"
+          SrcObjTyp: String(apLine.TransType || "18"),
+          SrcObjAbs: Number(apLine.DocEntry || apLine.CreatedBy || apLine.TransId),
+          CreditOrDebit: "codDebit",
+          ReconcileAmount: useRecon
         });
         usedApTransIds.add(Number(apLine.TransId));
         remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
@@ -1277,11 +1282,14 @@ async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconB
       if (availDeb <= 0.01) continue;
       const useRecon = Number(Math.min(availDeb, remainingToRecon).toFixed(2));
       reconRows.push({
+        Selected: "tYES",
         ShortName: "370001",
         TransId: Number(apLine.TransId),
         TransRowId: Number(apLine.Line_ID),
-        ReconcileAmount: useRecon,
-        CreditOrDebit: "codDebit"
+        SrcObjTyp: String(apLine.TransType || "18"),
+        SrcObjAbs: Number(apLine.DocEntry || apLine.CreatedBy || apLine.TransId),
+        CreditOrDebit: "codDebit",
+        ReconcileAmount: useRecon
       });
       remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
     }
@@ -1289,49 +1297,107 @@ async function reconcileJeOn370001({ transId, jdtNum, jeAmt, reconDate, apReconB
     const totalMatchedOnAp = Number((Math.min(Number(jeAmt || openJeCred), openJeCred) - remainingToRecon).toFixed(2));
     if (totalMatchedOnAp > 0 && reconRows.length > 0) {
       reconRows.push({
+        Selected: "tYES",
         ShortName: "370001",
         TransId: Number(jeLine.TransId),
         TransRowId: Number(jeLine.Line_ID),
-        ReconcileAmount: totalMatchedOnAp,
-        CreditOrDebit: "codCredit"
+        SrcObjTyp: String(jeLine.TransType || "30"),
+        SrcObjAbs: Number(jeLine.CreatedBy || jeLine.TransId),
+        CreditOrDebit: "codCredit",
+        ReconcileAmount: totalMatchedOnAp
       });
 
-      const finalReconDate = reconDate || new Date().toISOString().split("T")[0];
+      const finalReconDate = new Date().toISOString().split("T")[0];
       const matchedApLabels = openApLines
         .filter((a) => reconRows.some((r) => Number(r.TransId) === Number(a.TransId)))
         .map((a) => `AP #${a.DocNum}${a.NumAtCard ? " (" + a.NumAtCard + ")" : ""}`)
         .join(", ");
 
-      let slReconSucceeded = false;
+      // Attempt 1: Query SAP Service Layer GetOpenTransactions first so SAP provides its own exact row metadata
+      let slPosted = false;
+      let lastSlError = "";
       try {
-        await serviceLayer.post("/InternalReconciliations", {
-          CardOrAccount: "coaAccount",
-          ReconDate: finalReconDate,
-          InternalReconciliationOpenTransRows: reconRows
+        const openTransRes = await serviceLayer.post("/InternalReconciliationsService_GetOpenTransactions", {
+          InternalReconciliationOpenTransParams: {
+            CardOrAccount: "coaAccount",
+            AccountNo: "370001",
+            ReconDate: finalReconDate
+          }
         });
-        slReconSucceeded = true;
-      } catch (slErr1) {
+        const sapOpenRows = openTransRes?.InternalReconciliationOpenTransRows || [];
+        if (sapOpenRows.length > 0) {
+          const selectedSapRows = [];
+          for (const target of reconRows) {
+            const match = sapOpenRows.find(
+              (s) => Number(s.TransId) === Number(target.TransId) && Number(s.TransRowId) === Number(target.TransRowId)
+            );
+            if (match) {
+              selectedSapRows.push({
+                ...match,
+                Selected: "tYES",
+                ReconcileAmount: target.ReconcileAmount
+              });
+            }
+          }
+          if (selectedSapRows.length === reconRows.length) {
+            await serviceLayer.post("/InternalReconciliations", {
+              CardOrAccount: "coaAccount",
+              ReconDate: finalReconDate,
+              InternalReconciliationOpenTransRows: selectedSapRows
+            });
+            slPosted = true;
+          }
+        }
+      } catch (errOpen) {
+        lastSlError = errOpen.message;
+      }
+
+      // Attempt 2: Direct POST /InternalReconciliations with Selected: "tYES", SrcObjTyp, SrcObjAbs
+      if (!slPosted) {
         try {
-          const strippedRows = reconRows.map(({ CreditOrDebit, ...rest }) => rest);
           await serviceLayer.post("/InternalReconciliations", {
             CardOrAccount: "coaAccount",
             ReconDate: finalReconDate,
-            InternalReconciliationOpenTransRows: strippedRows
+            InternalReconciliationOpenTransRows: reconRows
           });
-          slReconSucceeded = true;
-        } catch (slErr2) {
-          console.warn("[RoDTEP] SAP Service Layer coaAccount InternalReconciliations note:", slErr2.message);
+          slPosted = true;
+        } catch (slErr1) {
+          lastSlError = slErr1.message;
+          // Attempt 3: Minimal row structure with Selected: "tYES"
+          try {
+            const minimalRows = reconRows.map((r) => ({
+              Selected: "tYES",
+              ShortName: "370001",
+              TransId: r.TransId,
+              TransRowId: r.TransRowId,
+              ReconcileAmount: r.ReconcileAmount,
+              CreditOrDebit: r.CreditOrDebit
+            }));
+            await serviceLayer.post("/InternalReconciliations", {
+              CardOrAccount: "coaAccount",
+              ReconDate: finalReconDate,
+              InternalReconciliationOpenTransRows: minimalRows
+            });
+            slPosted = true;
+          } catch (slErr2) {
+            lastSlError = slErr2.message;
+          }
         }
       }
 
-      reconStatus.reconciled = true;
-      reconStatus.slReconSucceeded = slReconSucceeded;
-      reconStatus.message = `Reconciled JE #${jdtNum || transId} (₹${totalMatchedOnAp.toLocaleString("en-IN")}) with ${matchedApLabels || "A/P Invoice(s)"} on G/L 370001!`;
+      if (slPosted) {
+        reconStatus.reconciled = true;
+        reconStatus.message = `SAP Service Layer Reconciled JE #${jdtNum || transId} (₹${totalMatchedOnAp.toLocaleString("en-IN")}) with ${matchedApLabels || "A/P Invoice(s)"} on G/L 370001!`;
+      } else {
+        reconStatus.reconciled = false;
+        reconStatus.message = `SAP Service Layer /InternalReconciliations response: ${lastSlError}`;
+      }
     } else {
       reconStatus.message = "Could not match open A/P Invoice debit amount for reconciliation.";
     }
   } catch (rErr) {
-    reconStatus.message = `Reconciliation note: ${rErr.message}`;
+    reconStatus.reconciled = false;
+    reconStatus.message = `Reconciliation error: ${rErr.message}`;
   }
   return reconStatus;
 }
