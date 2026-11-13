@@ -1015,7 +1015,8 @@ router.post("/post-grpo-je", async (req, res) => {
       jeDirection = "CREDIT_370001_DEBIT_DUTY", // "CREDIT_370001_DEBIT_DUTY" or "DEBIT_370001_CREDIT_DUTY"
       memo = "",
       reconcileWithAp = true,
-      reconcileApDocEntries = [] // optional array of APDocEntry numbers to reconcile against
+      reconcileApDocEntries = [], // optional array of APDocEntry numbers to reconcile against
+      apReconBreakdown = [] // [{ apDocEntry, apDocNum, numAtCard, amount }]
     } = req.body;
 
     const jeAmt = Number(Number(amount || 0).toFixed(2));
@@ -1057,13 +1058,25 @@ router.post("/post-grpo-je", async (req, res) => {
       rodtepLine.Credit = jeAmt;
     }
 
+    const ref2Str =
+      (apReconBreakdown || [])
+        .map((x) => x.numAtCard || (x.apDocNum ? "AP#" + x.apDocNum : ""))
+        .filter(Boolean)
+        .join(", ")
+        .slice(0, 100) || (grpoDocNum ? "GRPO#" + String(grpoDocNum) : "");
+
+    dutyLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
+    dutyLine.Reference2 = ref2Str;
+    rodtepLine.Reference1 = String(boeNo || blNo || "").slice(0, 100);
+    rodtepLine.Reference2 = ref2Str;
+
     const jePayload = {
       ReferenceDate: finalDate,
       DueDate: finalDate,
       TaxDate: finalDate,
       Memo: finalMemo,
       Reference: String(boeNo || blNo || "").slice(0, 100),
-      Reference2: grpoDocNum ? String(grpoDocNum) : "",
+      Reference2: ref2Str,
       JournalEntryLines: [dutyLine, rodtepLine]
     };
 
@@ -1099,16 +1112,48 @@ router.post("/post-grpo-je", async (req, res) => {
           let remainingToRecon = Math.min(jeAmt, Number(jeLine.BalDueCred || jeAmt));
           const reconRows = [];
 
-          // Prioritize AP invoices specified in reconcileApDocEntries
-          const prefSet = new Set((reconcileApDocEntries || []).map((x) => Number(x)));
-          const sortedApLines = [...openApLines].sort((a, b) => {
-            const aPref = prefSet.has(Number(a.DocEntry)) ? 0 : 1;
-            const bPref = prefSet.has(Number(b.DocEntry)) ? 0 : 1;
-            return aPref - bPref;
-          });
+          // Map exact per-AP amounts from attached scrips (apReconBreakdown) first
+          const exactAmtByDocEntry = new Map();
+          const exactAmtByNumAtCard = new Map();
+          for (const item of apReconBreakdown || []) {
+            if (item.apDocEntry && Number(item.amount) > 0) {
+              exactAmtByDocEntry.set(
+                Number(item.apDocEntry),
+                (exactAmtByDocEntry.get(Number(item.apDocEntry)) || 0) + Number(item.amount)
+              );
+            } else if (item.numAtCard && Number(item.amount) > 0) {
+              const k = String(item.numAtCard).trim().toUpperCase();
+              exactAmtByNumAtCard.set(k, (exactAmtByNumAtCard.get(k) || 0) + Number(item.amount));
+            }
+          }
 
-          for (const apLine of sortedApLines) {
+          const usedApTransIds = new Set();
+
+          // Pass 1: Reconcile exact amounts against the specific AP Invoices that the attached scrips belong to
+          for (const apLine of openApLines) {
             if (remainingToRecon <= 0.01) break;
+            const docEntryNum = Number(apLine.DocEntry);
+            const wantedAmt = exactAmtByDocEntry.get(docEntryNum) || 0;
+            if (wantedAmt <= 0.01) continue;
+            const availDeb = Number(apLine.BalDueDeb || 0);
+            if (availDeb <= 0.01) continue;
+            const useRecon = Number(Math.min(availDeb, wantedAmt, remainingToRecon).toFixed(2));
+            if (useRecon > 0) {
+              reconRows.push({
+                ShortName: "370001",
+                TransId: Number(apLine.TransId),
+                TransRowId: Number(apLine.Line_ID),
+                ReconcileAmount: useRecon
+              });
+              usedApTransIds.add(Number(apLine.TransId));
+              remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
+            }
+          }
+
+          // Pass 2: If any amount remains (e.g., scrips were imported without an AP link), fall back to oldest open AP invoices
+          for (const apLine of openApLines) {
+            if (remainingToRecon <= 0.01) break;
+            if (usedApTransIds.has(Number(apLine.TransId))) continue;
             const availDeb = Number(apLine.BalDueDeb || 0);
             if (availDeb <= 0.01) continue;
             const useRecon = Number(Math.min(availDeb, remainingToRecon).toFixed(2));

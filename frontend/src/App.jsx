@@ -856,6 +856,37 @@ export default function App() {
     }
   };
 
+  const getGrpoApBreakdown = (r) => {
+    const byAp = new Map();
+    for (const u of r.attachedScrips || []) {
+      const sc = scrips.find((s) => s.LicNo === u.LicNo) || {};
+      const apEntry = sc.APDocEntry || u.APDocEntry || null;
+      const apNum = sc.APDocNum || u.APDocNum || null;
+      const invObj =
+        apInvoices.find(
+          (a) =>
+            (apEntry && Number(a.DocEntry) === Number(apEntry)) ||
+            (apNum && Number(a.DocNum) === Number(apNum))
+        ) || {};
+      const numAtCard = sc.NumAtCard || invObj.NumAtCard || "";
+      const cardName = sc.CardName || invObj.CardName || "";
+      const key = apEntry ? `ENTRY_${apEntry}` : apNum ? `NUM_${apNum}` : "UNLINKED";
+
+      const prev = byAp.get(key) || {
+        apDocEntry: apEntry,
+        apDocNum: apNum,
+        numAtCard,
+        cardName,
+        licNos: [],
+        amount: 0
+      };
+      prev.licNos.push(u.LicNo);
+      prev.amount = Number((prev.amount + Number(u.AmountUsed || 0)).toFixed(2));
+      byAp.set(key, prev);
+    }
+    return Array.from(byAp.values());
+  };
+
   const handleOpenJeForm = (r) => {
     if (activeJeGrpoKey === r.rowKey) {
       setActiveJeGrpoKey(null);
@@ -891,6 +922,7 @@ export default function App() {
         )
       );
 
+      const apReconBreakdown = getGrpoApBreakdown(r);
       const res = await apiRequest("POST", "/post-grpo-je", {
         grpoDocEntry: r.GRPODocEntry,
         grpoDocNum: r.GRPODocNum,
@@ -903,7 +935,8 @@ export default function App() {
         jeDirection: jeFormDirection,
         memo: jeFormMemo,
         reconcileWithAp: jeFormReconcileAp,
-        reconcileApDocEntries: linkedApDocEntries
+        reconcileApDocEntries: linkedApDocEntries,
+        apReconBreakdown
       });
 
       const d = res.data;
@@ -2434,6 +2467,45 @@ export default function App() {
                                           placeholder="BCD of BOE No ..."
                                           className="w-full px-2.5 py-2 bg-white border border-black/20 rounded text-[12px] font-mono-code"
                                         />
+                                      </div>
+                                    </div>
+
+                                    {/* Live A/P Invoice Internal Reconciliation Breakdown from Attached Scrips */}
+                                    <div className="bg-[#f8fafc] border border-emerald-200 rounded p-3 space-y-2">
+                                      <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-950">
+                                        SAP Internal Reconciliation Breakdown on G/L 370001 (Auto-Mapped from Attached RoDTEP Scrips):
+                                      </div>
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full text-left border-collapse text-[11.5px] bg-white border border-black/10 rounded">
+                                          <thead className="bg-[#f4f2ef] text-[10px] font-bold uppercase text-[#555] border-b border-black/10">
+                                            <tr>
+                                              <th className="py-1.5 px-2.5">SAP AP DocNum (Ref1)</th>
+                                              <th className="py-1.5 px-2.5">Vendor Bill Ref / NumAtCard (Ref2)</th>
+                                              <th className="py-1.5 px-2.5">Vendor</th>
+                                              <th className="py-1.5 px-2.5">Attached Scrips (Lic No)</th>
+                                              <th className="py-1.5 px-2.5 text-right">Amount to Reconcile on 370001 (₹)</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-black/[0.06]">
+                                            {getGrpoApBreakdown(r).map((b, bIdx) => (
+                                              <tr key={bIdx}>
+                                                <td className="py-1.5 px-2.5 font-mono-code font-bold text-[#c8102e]">
+                                                  {b.apDocNum ? `AP #${b.apDocNum}` : "Unlinked (Oldest Open AP)"}
+                                                </td>
+                                                <td className="py-1.5 px-2.5 font-mono-code font-bold text-[#1a1a1a]">
+                                                  {b.numAtCard || "—"}
+                                                </td>
+                                                <td className="py-1.5 px-2.5">{b.cardName || "—"}</td>
+                                                <td className="py-1.5 px-2.5 font-mono-code text-[11px]">
+                                                  {b.licNos.join(", ")}
+                                                </td>
+                                                <td className="py-1.5 px-2.5 text-right font-mono-code font-bold text-emerald-700">
+                                                  ₹{formatINR(b.amount)}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
                                       </div>
                                     </div>
 
