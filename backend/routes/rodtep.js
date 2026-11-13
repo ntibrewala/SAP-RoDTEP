@@ -7,22 +7,73 @@ const serviceLayer = require("../serviceLayer");
 const { loadSAPConfig } = require("../sapConfig");
 
 // Local JSON fallback store in case HANA_RO is used in dev environment without DDL/DML privileges
-const LOCAL_STORE_PATH = path.join(__dirname, "..", "rodtep_local_store.json");
+const CANDIDATE_STORE_PATHS = [
+  "D:\\BHV\\rod\\rodtep_local_store.json",
+  "D:\\BHV\\Config\\rodtep_local_store.json",
+  "D:\\BHV\\rodtep\\rodtep_local_store.json",
+  "N:\\SAP-RoDTEP\\SAP-RoDTEP\\rodtep_local_store.json",
+  path.join(__dirname, "..", "rodtep_local_store.json")
+];
+
+function getPrimaryStorePath() {
+  if (process.platform === "win32") {
+    try {
+      const dir = "D:\\BHV\\rod";
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      return "D:\\BHV\\rod\\rodtep_local_store.json";
+    } catch (_) {}
+  }
+  return path.join(__dirname, "..", "rodtep_local_store.json");
+}
 
 function readLocalStore() {
-  try {
-    if (fs.existsSync(LOCAL_STORE_PATH)) {
-      return JSON.parse(fs.readFileSync(LOCAL_STORE_PATH, "utf8"));
-    }
-  } catch (_) {}
-  return { scrips: [], utilizations: [] };
+  const scripsByLic = new Map();
+  const utilsByKey = new Map();
+
+  for (const p of CANDIDATE_STORE_PATHS) {
+    try {
+      if (fs.existsSync(p)) {
+        const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
+        for (const s of parsed.scrips || []) {
+          if (!s || !s.LicNo) continue;
+          const prev = scripsByLic.get(s.LicNo) || {};
+          scripsByLic.set(s.LicNo, {
+            ...prev,
+            ...s,
+            APDocEntry: s.APDocEntry || prev.APDocEntry || null,
+            APDocNum: s.APDocNum || prev.APDocNum || null,
+            CardCode: s.CardCode || prev.CardCode || "",
+            CardName: s.CardName || prev.CardName || "",
+            NumAtCard: s.NumAtCard || prev.NumAtCard || "",
+            APDocDate: s.APDocDate || prev.APDocDate || ""
+          });
+        }
+        for (const u of parsed.utilizations || []) {
+          if (!u || !u.LicNo) continue;
+          const uKey = `${u.BLNo || ""}_${u.GRPODocEntry || ""}_${u.LicNo}_${u.AmountUsed}`;
+          const prevU = utilsByKey.get(uKey) || {};
+          utilsByKey.set(uKey, { ...prevU, ...u });
+        }
+      }
+    } catch (_) {}
+  }
+
+  return {
+    scrips: Array.from(scripsByLic.values()),
+    utilizations: Array.from(utilsByKey.values())
+  };
 }
 
 function writeLocalStore(data) {
-  try {
-    fs.writeFileSync(LOCAL_STORE_PATH, JSON.stringify(data, null, 2), "utf8");
-  } catch (e) {
-    console.warn("[RoDTEP] Failed to write local store:", e.message);
+  const jsonStr = JSON.stringify(data, null, 2);
+  const primary = getPrimaryStorePath();
+  const targets = new Set([primary, path.join(__dirname, "..", "rodtep_local_store.json")]);
+  for (const t of targets) {
+    try {
+      fs.writeFileSync(t, jsonStr, "utf8");
+    } catch (e) {
+      console.warn("[RoDTEP] Failed to write local store to " + t + ":", e.message);
+    }
   }
 }
 
@@ -340,26 +391,57 @@ router.get("/scrips", async (req, res) => {
       }
     }
 
-    // Merge with local store if HANA tables are empty or in read-only dev mode
+    // Always merge HANA tables with local store and compute on-the-fly balance across all utilizations
     const local = readLocalStore();
-    if (scripsRows.length === 0 && local.scrips.length > 0) {
-      const utilByLic = {};
-      for (const u of local.utilizations || []) {
-        utilByLic[u.LicNo] = (utilByLic[u.LicNo] || 0) + Number(u.AmountUsed || 0);
-      }
-      scripsRows = local.scrips.map((s) => {
-        const scripAmt = Number(s.ScripAmount || 0);
-        const utilized = Number(utilByLic[s.LicNo] || 0);
-        const balance = Math.max(0, Number((scripAmt - utilized).toFixed(2)));
-        return {
-          ...s,
-          ScripAmount: scripAmt,
-          UtilizedAmount: utilized,
-          BalanceAmount: balance
-        };
-      });
-      utilRows = (local.utilizations || []).slice().reverse();
+    const mergedUtilsMap = new Map();
+    for (const u of utilRows || []) {
+      const k = `${u.BLNo || ""}_${u.GRPODocEntry || ""}_${u.LicNo}_${Number(u.AmountUsed || 0)}`;
+      mergedUtilsMap.set(k, u);
     }
+    for (const u of local.utilizations || []) {
+      const k = `${u.BLNo || ""}_${u.GRPODocEntry || ""}_${u.LicNo}_${Number(u.AmountUsed || 0)}`;
+      const existing = mergedUtilsMap.get(k) || {};
+      mergedUtilsMap.set(k, { ...existing, ...u });
+    }
+    utilRows = Array.from(mergedUtilsMap.values());
+
+    const utilByLic = {};
+    for (const u of utilRows) {
+      const lic = String(u.LicNo || "").trim();
+      utilByLic[lic] = Number(((utilByLic[lic] || 0) + Number(u.AmountUsed || 0)).toFixed(2));
+    }
+
+    const mergedScripsMap = new Map();
+    for (const s of scripsRows || []) {
+      mergedScripsMap.set(String(s.LicNo).trim(), s);
+    }
+    for (const s of local.scrips || []) {
+      const lic = String(s.LicNo).trim();
+      const existing = mergedScripsMap.get(lic) || {};
+      mergedScripsMap.set(lic, {
+        ...existing,
+        ...s,
+        APDocEntry: existing.APDocEntry || s.APDocEntry || null,
+        APDocNum: existing.APDocNum || s.APDocNum || null,
+        CardCode: existing.CardCode || s.CardCode || "",
+        CardName: existing.CardName || s.CardName || "",
+        NumAtCard: existing.NumAtCard || s.NumAtCard || "",
+        APDocDate: existing.APDocDate || s.APDocDate || ""
+      });
+    }
+
+    scripsRows = Array.from(mergedScripsMap.values()).map((s) => {
+      const lic = String(s.LicNo).trim();
+      const scripAmt = Number(s.ScripAmount || 0);
+      const utilized = Number(utilByLic[lic] || 0);
+      const balance = Math.max(0, Number((scripAmt - utilized).toFixed(2)));
+      return {
+        ...s,
+        ScripAmount: scripAmt,
+        UtilizedAmount: utilized,
+        BalanceAmount: balance
+      };
+    });
 
     let glReconPendingRows = [];
     let glAllApRows = [];
@@ -874,6 +956,228 @@ router.patch("/scrip-ap-link", async (req, res) => {
 
     res.json({ success: true, licNo: cleanLic, apDocEntry, apDocNum });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// --- 9. GET /api/rodtep/custom-duty-accounts: Fetch Custom Duty BP (V00040) & Custom Duty G/L Accounts ---
+router.get("/custom-duty-accounts", async (req, res) => {
+  try {
+    let bpAccounts = [];
+    let glAccounts = [];
+    try {
+      const [bps] = await db.query(`
+        SELECT "CardCode" AS "Code", "CardName" AS "Name", BP AS "Type"
+        FROM "OCRD"
+        WHERE "CardCode" = V00040
+           OR UPPER("CardName") LIKE %CUSTOM%
+           OR UPPER("CardName") LIKE %DUTY%
+           OR UPPER("CardName") LIKE %COMMISSIONER%
+           OR UPPER("CardName") LIKE %PORT%
+        ORDER BY CASE WHEN "CardCode" = V00040 THEN 0 ELSE 1 END, "CardName"
+      `);
+      bpAccounts = bps || [];
+    } catch (_) {}
+
+    try {
+      const [gls] = await db.query(`
+        SELECT "AcctCode" AS "Code", "AcctName" AS "Name", GL AS "Type"
+        FROM "OACT"
+        WHERE "AcctCode" IN (520053, 370001, 410023)
+           OR UPPER("AcctName") LIKE %CUSTOM%
+           OR UPPER("AcctName") LIKE %DUTY%
+           OR UPPER("AcctName") LIKE %RODTEP%
+           OR UPPER("AcctName") LIKE %BCD%
+        ORDER BY CASE WHEN "AcctCode" = 520053 THEN 0 ELSE 1 END, "AcctName"
+      `);
+      glAccounts = gls || [];
+    } catch (_) {}
+
+    res.json({ bpAccounts, glAccounts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- 10. POST /api/rodtep/post-grpo-je: Post Custom Duty <-> RoDTEP 370001 JE & Reconcile with AP Invoice ---
+router.post("/post-grpo-je", async (req, res) => {
+  try {
+    const {
+      grpoDocEntry = null,
+      grpoDocNum = null,
+      blNo = "",
+      boeNo = "",
+      jeDate = new Date().toISOString().split("T")[0],
+      amount = 0,
+      customDutyCode = "V00040",
+      customDutyAccountType = "BP", // "BP" (ShortName e.g. V00040) or "GL" (AccountCode e.g. 520053)
+      jeDirection = "CREDIT_370001_DEBIT_DUTY", // "CREDIT_370001_DEBIT_DUTY" or "DEBIT_370001_CREDIT_DUTY"
+      memo = "",
+      reconcileWithAp = true,
+      reconcileApDocEntries = [] // optional array of APDocEntry numbers to reconcile against
+    } = req.body;
+
+    const jeAmt = Number(Number(amount || 0).toFixed(2));
+    if (isNaN(jeAmt) || jeAmt <= 0) {
+      return res.status(400).json({ error: "Invalid Journal Entry amount." });
+    }
+
+    const cleanDutyCode = String(customDutyCode || "V00040").trim();
+    const isBp =
+      customDutyAccountType === "BP" ||
+      /^[VC]/i.test(cleanDutyCode);
+
+    const finalDate = parseExcelDateToIso(jeDate) || new Date().toISOString().split("T")[0];
+    const finalMemo =
+      String(memo || "").trim() ||
+      (boeNo
+        ? `BCD of BOE No ${boeNo}`
+        : `BCD of BL ${blNo || ""}${grpoDocNum ? " GRPO #" + grpoDocNum : ""}`).slice(0, 50);
+
+    const dutyLine = isBp
+      ? { ShortName: cleanDutyCode, LineMemo: finalMemo }
+      : { AccountCode: cleanDutyCode, LineMemo: finalMemo };
+
+    const rodtepLine = {
+      AccountCode: "370001",
+      LineMemo: finalMemo
+    };
+
+    if (jeDirection === "DEBIT_370001_CREDIT_DUTY") {
+      rodtepLine.Debit = jeAmt;
+      rodtepLine.Credit = 0;
+      dutyLine.Debit = 0;
+      dutyLine.Credit = jeAmt;
+    } else {
+      // Standard SAP BOE Duty utilization: Debit Custom Duty (V00040 / 520053), Credit RoDTEP 370001
+      dutyLine.Debit = jeAmt;
+      dutyLine.Credit = 0;
+      rodtepLine.Debit = 0;
+      rodtepLine.Credit = jeAmt;
+    }
+
+    const jePayload = {
+      ReferenceDate: finalDate,
+      DueDate: finalDate,
+      TaxDate: finalDate,
+      Memo: finalMemo,
+      Reference: String(boeNo || blNo || "").slice(0, 100),
+      Reference2: grpoDocNum ? String(grpoDocNum) : "",
+      JournalEntryLines: [dutyLine, rodtepLine]
+    };
+
+    const jeRes = await serviceLayer.post("/JournalEntries", jePayload);
+    const jdtNum = jeRes.JdtNum || jeRes.Number || null;
+    const transId = jeRes.JdtNum || jeRes.TransId || null;
+
+    // Attempt SAP Internal Reconciliation on G/L 370001 if requested and direction credits 370001
+    let reconStatus = { attempted: false, reconciled: false, message: "" };
+    if (reconcileWithAp && jeDirection === "CREDIT_370001_DEBIT_DUTY" && transId) {
+      reconStatus.attempted = true;
+      try {
+        // Find the JDT1 line for the new JE on Account 370001
+        const [jeLineRows] = await db.query(
+          `SELECT "TransId", "Line_ID", CAST("BalDueCred" AS DOUBLE) AS "BalDueCred"
+           FROM "JDT1"
+           WHERE ("TransId" = ? OR "BaseRef" = ?) AND "Account" = 370001 AND "Credit" > 0`,
+          [Number(transId), String(jdtNum || transId)]
+        );
+
+        // Find open Debit JDT1 lines on Account 370001 for the linked AP Invoice(s)
+        let apQuery = `
+          SELECT j1."TransId", j1."Line_ID", CAST(j1."BalDueDeb" AS DOUBLE) AS "BalDueDeb", p0."DocEntry", p0."DocNum"
+          FROM "JDT1" j1
+          INNER JOIN "OPCH" p0 ON p0."TransId" = j1."TransId"
+          WHERE j1."Account" = 370001 AND j1."BalDueDeb" > 0 AND p0."CANCELED" = N
+          ORDER BY p0."DocDate" ASC, p0."DocEntry" ASC
+        `;
+        const [openApLines] = await db.query(apQuery);
+
+        if (jeLineRows && jeLineRows.length > 0 && openApLines && openApLines.length > 0) {
+          const jeLine = jeLineRows[0];
+          let remainingToRecon = Math.min(jeAmt, Number(jeLine.BalDueCred || jeAmt));
+          const reconRows = [];
+
+          // Prioritize AP invoices specified in reconcileApDocEntries
+          const prefSet = new Set((reconcileApDocEntries || []).map((x) => Number(x)));
+          const sortedApLines = [...openApLines].sort((a, b) => {
+            const aPref = prefSet.has(Number(a.DocEntry)) ? 0 : 1;
+            const bPref = prefSet.has(Number(b.DocEntry)) ? 0 : 1;
+            return aPref - bPref;
+          });
+
+          for (const apLine of sortedApLines) {
+            if (remainingToRecon <= 0.01) break;
+            const availDeb = Number(apLine.BalDueDeb || 0);
+            if (availDeb <= 0.01) continue;
+            const useRecon = Number(Math.min(availDeb, remainingToRecon).toFixed(2));
+            reconRows.push({
+              ShortName: "370001",
+              TransId: Number(apLine.TransId),
+              TransRowId: Number(apLine.Line_ID),
+              ReconcileAmount: useRecon
+            });
+            remainingToRecon = Number((remainingToRecon - useRecon).toFixed(2));
+          }
+
+          const totalMatchedOnAp = Number((jeAmt - remainingToRecon).toFixed(2));
+          if (totalMatchedOnAp > 0 && reconRows.length > 0) {
+            reconRows.push({
+              ShortName: "370001",
+              TransId: Number(jeLine.TransId),
+              TransRowId: Number(jeLine.Line_ID),
+              ReconcileAmount: totalMatchedOnAp
+            });
+
+            await serviceLayer.post("/InternalReconciliations", {
+              CardOrAccount: "coaAccount",
+              ReconDate: finalDate,
+              InternalReconciliationOpenTransRows: reconRows
+            });
+
+            reconStatus.reconciled = true;
+            reconStatus.message = `Automatically reconciled ₹${totalMatchedOnAp.toLocaleString("en-IN")} on G/L 370001 in SAP!`;
+          }
+        }
+      } catch (rErr) {
+        reconStatus.message = `JE Posted (#${jdtNum}). Note on auto-reconciliation: ${rErr.message}`;
+      }
+    }
+
+    // Update local store utilizations for this GRPO / BL with JENum, JETransId, JEDate, BOENo
+    const local = readLocalStore();
+    local.utilizations = (local.utilizations || []).map((u) => {
+      const matchGrpo = grpoDocEntry && Number(u.GRPODocEntry) === Number(grpoDocEntry);
+      const matchBl = blNo && String(u.BLNo || "").trim().toUpperCase() === String(blNo).trim().toUpperCase();
+      if (matchGrpo || matchBl) {
+        return {
+          ...u,
+          BOENo: boeNo || u.BOENo || "",
+          JENum: jdtNum,
+          JETransId: transId,
+          JEDate: finalDate,
+          JEDirection: jeDirection,
+          CustomDutyCode: cleanDutyCode,
+          ReconciledInSAP: reconStatus.reconciled
+        };
+      }
+      return u;
+    });
+    writeLocalStore(local);
+
+    res.json({
+      success: true,
+      jdtNum,
+      transId,
+      jeDate: finalDate,
+      amount: jeAmt,
+      customDutyCode: cleanDutyCode,
+      jeDirection,
+      reconStatus
+    });
+  } catch (err) {
+    console.error("[RoDTEP] POST /post-grpo-je error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

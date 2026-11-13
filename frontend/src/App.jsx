@@ -264,6 +264,17 @@ export default function App() {
   const [expandedApDocs, setExpandedApDocs] = useState({});
   const [expandedGrpoDocs, setExpandedGrpoDocs] = useState({});
   const [grpoListViewMode, setGrpoListViewMode] = useState("ATTACHED_ONLY"); // "ATTACHED_ONLY" | "PENDING_ONLY" | "ALL_GRPO"
+  const [customDutyAccounts, setCustomDutyAccounts] = useState({ bpAccounts: [], glAccounts: [] });
+  const [activeJeGrpoKey, setActiveJeGrpoKey] = useState(null);
+  const [jeFormDate, setJeFormDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [jeFormBoeNo, setJeFormBoeNo] = useState("");
+  const [jeFormAmount, setJeFormAmount] = useState("");
+  const [jeFormDutyCode, setJeFormDutyCode] = useState("V00040");
+  const [jeFormDutyType, setJeFormDutyType] = useState("BP");
+  const [jeFormDirection, setJeFormDirection] = useState("CREDIT_370001_DEBIT_DUTY");
+  const [jeFormMemo, setJeFormMemo] = useState("");
+  const [jeFormReconcileAp, setJeFormReconcileAp] = useState(true);
+  const [submittingJe, setSubmittingJe] = useState(false);
   const toggleExpandGrpo = (key) => setExpandedGrpoDocs((prev) => ({ ...prev, [key]: !prev[key] }));
   const toggleExpandAp = (key) => setExpandedApDocs((prev) => ({ ...prev, [key]: !prev[key] }));
 
@@ -285,12 +296,16 @@ export default function App() {
   const fetchAllData = useCallback(async () => {
     setLoading(true);
     try {
-      const [vRes, apRes, grpoRes, scripRes] = await Promise.all([
+      const [vRes, apRes, grpoRes, scripRes, dutyRes] = await Promise.all([
         apiRequest("GET", "/vendors"),
         apiRequest("GET", "/ap-invoices"),
         apiRequest("GET", "/grpo-bl-list"),
-        apiRequest("GET", "/scrips")
+        apiRequest("GET", "/scrips"),
+        apiRequest("GET", "/custom-duty-accounts").catch(() => ({ data: { bpAccounts: [], glAccounts: [] } }))
       ]);
+      if (dutyRes && dutyRes.data) {
+        setCustomDutyAccounts(dutyRes.data);
+      }
       setVendors(vRes.data || []);
       setApInvoices(apRes.data || []);
       setGrpos(grpoRes.data?.grpos || []);
@@ -421,6 +436,7 @@ export default function App() {
         : Number(g.BoEValue || 0);
       const isAttached = matchingUtils.length > 0 && totalAttached > 0;
 
+      const postedJeUtil = matchingUtils.find((u) => u.JENum || u.JETransId);
       rows.push({
         rowKey: `GRPO_${g.GRPODocEntry}`,
         GRPODocEntry: g.GRPODocEntry,
@@ -434,7 +450,10 @@ export default function App() {
         DraftBOEAmount: draftBoe,
         totalAttached,
         attachedScrips: matchingUtils,
-        isAttached
+        isAttached,
+        JENum: postedJeUtil ? postedJeUtil.JENum || postedJeUtil.JETransId : null,
+        JEDate: postedJeUtil ? postedJeUtil.JEDate : null,
+        ReconciledInSAP: postedJeUtil ? !!postedJeUtil.ReconciledInSAP : false
       });
     }
 
@@ -455,6 +474,7 @@ export default function App() {
         list.reduce((sum, u) => sum + Number(u.AmountUsed || 0), 0).toFixed(2)
       );
       const draftBoe = Math.max(...list.map((u) => Number(u.DraftBOEAmount || 0)));
+      const postedJeUtil = list.find((u) => u.JENum || u.JETransId);
       rows.push({
         rowKey: `BL_${blKey}`,
         GRPODocEntry: first.GRPODocEntry || null,
@@ -468,7 +488,10 @@ export default function App() {
         DraftBOEAmount: draftBoe,
         totalAttached,
         attachedScrips: list,
-        isAttached: true
+        isAttached: true,
+        JENum: postedJeUtil ? postedJeUtil.JENum || postedJeUtil.JETransId : null,
+        JEDate: postedJeUtil ? postedJeUtil.JEDate : null,
+        ReconciledInSAP: postedJeUtil ? !!postedJeUtil.ReconciledInSAP : false
       });
     }
 
@@ -830,6 +853,77 @@ export default function App() {
       });
     } finally {
       setSubmittingBl(false);
+    }
+  };
+
+  const handleOpenJeForm = (r) => {
+    if (activeJeGrpoKey === r.rowKey) {
+      setActiveJeGrpoKey(null);
+      return;
+    }
+    setActiveJeGrpoKey(r.rowKey);
+    setJeFormBoeNo(r.BOENo || "");
+    setJeFormAmount(String(r.totalAttached || r.DraftBOEAmount || 0));
+    setJeFormDate(new Date().toISOString().split("T")[0]);
+    setJeFormDutyCode("V00040");
+    setJeFormDutyType("BP");
+    setJeFormDirection("CREDIT_370001_DEBIT_DUTY");
+    setJeFormMemo(
+      r.BOENo
+        ? `BCD of BOE No ${r.BOENo}`
+        : `BCD of BL ${r.BLNo || ""}${r.GRPODocNum ? " GRPO #" + r.GRPODocNum : ""}`
+    );
+    setJeFormReconcileAp(true);
+  };
+
+  const handlePostGrpoJe = async (r) => {
+    setSubmittingJe(true);
+    setBanner(null);
+    try {
+      const linkedApDocEntries = Array.from(
+        new Set(
+          (r.attachedScrips || [])
+            .map((u) => {
+              const sc = scrips.find((s) => s.LicNo === u.LicNo);
+              return sc?.APDocEntry || null;
+            })
+            .filter(Boolean)
+        )
+      );
+
+      const res = await apiRequest("POST", "/post-grpo-je", {
+        grpoDocEntry: r.GRPODocEntry,
+        grpoDocNum: r.GRPODocNum,
+        blNo: r.BLNo,
+        boeNo: jeFormBoeNo,
+        jeDate: jeFormDate,
+        amount: Number(jeFormAmount),
+        customDutyCode: jeFormDutyCode,
+        customDutyAccountType: jeFormDutyType,
+        jeDirection: jeFormDirection,
+        memo: jeFormMemo,
+        reconcileWithAp: jeFormReconcileAp,
+        reconcileApDocEntries: linkedApDocEntries
+      });
+
+      const d = res.data;
+      setBanner({
+        type: "success",
+        text: `Posted SAP Journal Entry #${d.jdtNum || d.transId} for ₹${formatINR(d.amount)} (${
+          d.jeDirection === "DEBIT_370001_CREDIT_DUTY"
+            ? `Debit 370001 / Credit ${d.customDutyCode}`
+            : `Debit ${d.customDutyCode} / Credit 370001`
+        })${d.reconStatus?.message ? " · " + d.reconStatus.message : ""}!`
+      });
+      setActiveJeGrpoKey(null);
+      await fetchAllData();
+    } catch (err) {
+      setBanner({
+        type: "error",
+        text: err.response?.data?.error || err.message || "Failed to post Custom Duty JE."
+      });
+    } finally {
+      setSubmittingJe(false);
     }
   };
 
@@ -1472,6 +1566,25 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
+                    onClick={() => setGlListViewMode("LINKED_AP")}
+                    className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
+                      glListViewMode === "LINKED_AP"
+                        ? "bg-emerald-700 text-white"
+                        : "bg-emerald-50 text-emerald-900 border border-emerald-300 hover:bg-emerald-100"
+                    }`}
+                  >
+                    ✓ AP Invoices with Linked RoDTEP ({
+                      glAllApRows.filter((r) =>
+                        scrips.some(
+                          (s) =>
+                            (r.APDocEntry && Number(s.APDocEntry) === Number(r.APDocEntry)) ||
+                            (r.APDocNum && Number(s.APDocNum) === Number(r.APDocNum))
+                        )
+                      ).length
+                    })
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setGlListViewMode("PENDING_ONLY")}
                     className={`px-3 py-1.5 rounded-[4px] text-[10.5px] font-bold uppercase tracking-wider cursor-pointer ${
                       glListViewMode === "PENDING_ONLY"
@@ -1549,7 +1662,18 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-black/[0.06] bg-white">
-                      {(glListViewMode === "ALL_AP" ? glAllApRows : glReconPendingRows).map((r, idx) => {
+                      {(glListViewMode === "ALL_AP"
+                        ? glAllApRows
+                        : glListViewMode === "LINKED_AP"
+                        ? glAllApRows.filter((r) =>
+                            scrips.some(
+                              (s) =>
+                                (r.APDocEntry && Number(s.APDocEntry) === Number(r.APDocEntry)) ||
+                                (r.APDocNum && Number(s.APDocNum) === Number(r.APDocNum))
+                            )
+                          )
+                        : glReconPendingRows
+                      ).map((r, idx) => {
                         const rowKey = `${r.TransId}-${r.Line_ID}`;
                         const linkedList = scrips.filter(
                           (s) =>
@@ -1564,7 +1688,7 @@ export default function App() {
                         const targetAmt = pendingRecon > 0 ? pendingRecon : origDebit;
                         const unlinkedBalance = Math.max(0, Number((targetAmt - enteredForAp).toFixed(2)));
                         const isFullyLinked = enteredForAp > 0 && unlinkedBalance <= 0.5;
-                        const isExpanded = !!expandedApDocs[rowKey];
+                        const isExpanded = expandedApDocs[rowKey] !== undefined ? expandedApDocs[rowKey] : glListViewMode === "LINKED_AP" && linkedList.length > 0;
 
                         return (
                           <React.Fragment key={rowKey}>
@@ -2099,7 +2223,7 @@ export default function App() {
                       }
 
                       return filteredRows.map((r, idx) => {
-                        const isExpanded = !!expandedGrpoDocs[r.rowKey];
+                        const isExpanded = expandedGrpoDocs[r.rowKey] !== undefined ? expandedGrpoDocs[r.rowKey] : r.isAttached;
                         return (
                           <React.Fragment key={r.rowKey}>
                             <tr className={`hover:bg-[#faf9f7] ${isExpanded ? "bg-blue-50/40" : ""}`}>
@@ -2149,6 +2273,19 @@ export default function App() {
                                       <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[10px] font-bold uppercase">
                                         ✓ Attached
                                       </span>
+                                      {r.JENum ? (
+                                        <span className="px-2 py-0.5 bg-purple-100 text-purple-900 border border-purple-300 rounded text-[10px] font-bold uppercase">
+                                          ✓ JE #{r.JENum} {r.ReconciledInSAP ? "(Reconciled)" : ""}
+                                        </span>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenJeForm(r)}
+                                          className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                        >
+                                          {activeJeGrpoKey === r.rowKey ? "Close JE Form ▲" : "Post Custom Duty JE & Reconcile"}
+                                        </button>
+                                      )}
                                     </>
                                   ) : (
                                     <button
@@ -2169,6 +2306,174 @@ export default function App() {
                                 </div>
                               </td>
                             </tr>
+
+                            {/* Inline Panel to Post Custom Duty <-> RoDTEP 370001 JE & Reconcile with AP Invoice */}
+                            {activeJeGrpoKey === r.rowKey && (
+                              <tr className="bg-emerald-50/70">
+                                <td colSpan={9} className="p-4 border-l-4 border-l-emerald-700">
+                                  <div className="bg-white p-4 rounded-[6px] border border-emerald-300 space-y-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/10 pb-2">
+                                      <div>
+                                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800">
+                                          SAP Service Layer · JournalEntries &amp; InternalReconciliations (G/L 370001)
+                                        </span>
+                                        <h4 className="text-[14px] font-extrabold text-[#1a1a1a]">
+                                          Post Custom Duty Journal Entry &amp; Reconcile AP Invoice for{" "}
+                                          {r.GRPODocNum ? `GRPO #${r.GRPODocNum}` : `BL ${r.BLNo}`}
+                                        </h4>
+                                      </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                                      <div>
+                                        <label className="block text-[10.5px] font-bold uppercase text-[#444] mb-1">
+                                          1. Entry Direction (G/L 370001 vs Custom Duty)
+                                        </label>
+                                        <select
+                                          value={jeFormDirection}
+                                          onChange={(e) => setJeFormDirection(e.target.value)}
+                                          className="w-full px-2.5 py-2 bg-white border border-black/20 rounded text-[11.5px] font-bold"
+                                        >
+                                          <option value="CREDIT_370001_DEBIT_DUTY">
+                                            Debit Custom Duty / Credit RoDTEP 370001 (SAP BOE Standard — Reconciles with AP Debit)
+                                          </option>
+                                          <option value="DEBIT_370001_CREDIT_DUTY">
+                                            Debit RoDTEP 370001 / Credit Custom Duty
+                                          </option>
+                                        </select>
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-[10.5px] font-bold uppercase text-[#444] mb-1">
+                                          2. Custom Duty BP / G/L Account
+                                        </label>
+                                        <div className="flex gap-1">
+                                          <select
+                                            value={jeFormDutyType}
+                                            onChange={(e) => {
+                                              const t = e.target.value;
+                                              setJeFormDutyType(t);
+                                              setJeFormDutyCode(t === "BP" ? "V00040" : "520053");
+                                            }}
+                                            className="px-2 py-2 bg-[#f4f2ef] border border-black/20 rounded text-[11px] font-bold"
+                                          >
+                                            <option value="BP">BP</option>
+                                            <option value="GL">G/L</option>
+                                          </select>
+                                          <input
+                                            type="text"
+                                            list="custom-duty-code-list"
+                                            value={jeFormDutyCode}
+                                            onChange={(e) => setJeFormDutyCode(e.target.value)}
+                                            placeholder="V00040 or 520053"
+                                            className="w-full px-2.5 py-2 bg-white border border-black/20 rounded text-[12px] font-mono-code font-bold"
+                                          />
+                                          <datalist id="custom-duty-code-list">
+                                            <option value="V00040">V00040 — Custom Duty BP (Used in 57 BOE JEs)</option>
+                                            <option value="520053">520053 — Custom Duty G/L</option>
+                                            {(customDutyAccounts.bpAccounts || []).map((a) => (
+                                              <option key={`BP_${a.Code}`} value={a.Code}>
+                                                {a.Code} — {a.Name} (BP)
+                                              </option>
+                                            ))}
+                                            {(customDutyAccounts.glAccounts || []).map((a) => (
+                                              <option key={`GL_${a.Code}`} value={a.Code}>
+                                                {a.Code} — {a.Name} (G/L)
+                                              </option>
+                                            ))}
+                                          </datalist>
+                                        </div>
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-[10.5px] font-bold uppercase text-[#444] mb-1">
+                                          3. BOE Number &amp; JE Date
+                                        </label>
+                                        <div className="flex gap-1.5">
+                                          <input
+                                            type="text"
+                                            value={jeFormBoeNo}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              setJeFormBoeNo(v);
+                                              if (v) setJeFormMemo(`BCD of BOE No ${v}`);
+                                            }}
+                                            placeholder="BOE No"
+                                            className="w-1/2 px-2 py-2 bg-white border border-black/20 rounded text-[12px] font-mono-code"
+                                          />
+                                          <input
+                                            type="date"
+                                            value={jeFormDate}
+                                            onChange={(e) => setJeFormDate(e.target.value)}
+                                            className="w-1/2 px-2 py-2 bg-white border border-black/20 rounded text-[11.5px] font-mono-code"
+                                          />
+                                        </div>
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-[10.5px] font-bold uppercase text-[#444] mb-1">
+                                          4. JE Amount (₹)
+                                        </label>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={jeFormAmount}
+                                          onChange={(e) => setJeFormAmount(e.target.value)}
+                                          className="w-full px-2.5 py-2 bg-white border border-black/20 rounded text-[12.5px] font-mono-code font-bold"
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-[10.5px] font-bold uppercase text-[#444] mb-1">
+                                          5. Remarks / LineMemo
+                                        </label>
+                                        <input
+                                          type="text"
+                                          value={jeFormMemo}
+                                          onChange={(e) => setJeFormMemo(e.target.value)}
+                                          placeholder="BCD of BOE No ..."
+                                          className="w-full px-2.5 py-2 bg-white border border-black/20 rounded text-[12px] font-mono-code"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-black/10">
+                                      <label className="flex items-center gap-2 text-[12px] font-medium cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={jeFormReconcileAp}
+                                          onChange={(e) => setJeFormReconcileAp(e.target.checked)}
+                                          className="w-4 h-4 accent-emerald-700"
+                                        />
+                                        <span>
+                                          <strong>Also Reconcile with Linked SAP A/P Invoice(s) on G/L 370001</strong> (via SAP Internal Reconciliation)
+                                        </span>
+                                      </label>
+
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => setActiveJeGrpoKey(null)}
+                                          className="px-3 py-2 bg-[#f4f2ef] hover:bg-[#e5e1da] text-[#333] rounded text-[11px] font-bold uppercase cursor-pointer"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={submittingJe}
+                                          onClick={() => handlePostGrpoJe(r)}
+                                          className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[11.5px] font-bold uppercase tracking-wider cursor-pointer"
+                                        >
+                                          {submittingJe
+                                            ? "Posting JE & Reconciling in SAP..."
+                                            : `Post SAP JE (₹${formatINR(jeFormAmount)}) & Reconcile`}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
 
                             {/* Expandable Child Row listing all RoDTEP Scrips attached to this GRPO / BL */}
                             {isExpanded && r.attachedScrips.length > 0 && (

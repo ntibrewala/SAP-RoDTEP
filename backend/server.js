@@ -33,6 +33,7 @@ app.get(["/api/sap-status", "/rod/api/sap-status"], (req, res) => {
 });
 
 const candidateBuiltDirs = [
+  path.join(__dirname, "../frontend"),
   path.join(__dirname, "../frontendbuilt"),
   path.join(__dirname, "frontendbuilt"),
   path.join(__dirname, "../frontend/dist")
