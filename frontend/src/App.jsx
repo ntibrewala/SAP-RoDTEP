@@ -1203,6 +1203,38 @@ export default function App() {
     }
   };
 
+  const handleCancelReconAndReverseJe = async (r, detachScrips = true) => {
+    const confirmMsg = detachScrips
+      ? `Cancel SAP Internal Reconciliation, reverse SAP JE #${r.JENum} via Service Layer, and detach all ${r.attachedScrips.length} scrip(s) from ${r.GRPODocNum ? "GRPO #" + r.GRPODocNum : "BL " + r.BLNo} so you can attach them to the right GRPO?`
+      : `Cancel SAP Internal Reconciliation and reverse SAP JE #${r.JENum} via Service Layer (keeping scrips attached)?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setSubmittingJe(true);
+    setBanner(null);
+    try {
+      const res = await apiRequest("POST", "/cancel-grpo-je-and-detach", {
+        grpoDocEntry: r.GRPODocEntry,
+        grpoDocNum: r.GRPODocNum,
+        blNo: r.BLNo,
+        jeNum: r.JENum,
+        jeTransId: r.JETransId,
+        detachScrips
+      });
+      setBanner({
+        type: "success",
+        text: res.data?.message || "Cancelled reconciliation, reversed JE, and restored scrip balances!"
+      });
+      await fetchAllData();
+    } catch (err) {
+      setBanner({
+        type: "error",
+        text: err.response?.data?.error || err.message || "Failed to cancel reconciliation / reverse JE."
+      });
+    } finally {
+      setSubmittingJe(false);
+    }
+  };
+
   const handleDetachAllForGrpo = async (r) => {
     try {
       const ids = (r.attachedScrips || []).map((u) => u.Id).filter(Boolean);
@@ -2636,25 +2668,47 @@ export default function App() {
                                           : `View Scrips (${r.attachedScrips.length}) ▼`}
                                       </button>
 
-                                      {/* OPTION 3: Posted = Yes & Reconciled = Yes -> Locked · Posted JE and Reconciled (Purple) */}
+                                      {/* OPTION 3: Posted = Yes & Reconciled = Yes -> Locked · Posted JE and Reconciled (Purple) + Undo/Cancel */}
                                       {r.JENum && r.ReconciledInSAP ? (
-                                        <span
-                                          className="px-2.5 py-1 bg-purple-700 text-white border border-purple-900 rounded text-[10.5px] font-bold uppercase tracking-wider whitespace-nowrap select-none"
-                                          title="Both SAP Journal Entry and Internal Reconciliation on G/L 370001 are completed and locked"
-                                        >
-                                          🔒 Locked · Posted JE and Reconciled
-                                        </span>
+                                        <>
+                                          <span
+                                            className="px-2.5 py-1 bg-purple-700 text-white border border-purple-900 rounded text-[10.5px] font-bold uppercase tracking-wider whitespace-nowrap select-none"
+                                            title="Both SAP Journal Entry and Internal Reconciliation on G/L 370001 are completed and locked"
+                                          >
+                                            🔒 Locked · Posted JE and Reconciled
+                                          </span>
+                                          <button
+                                            type="button"
+                                            disabled={submittingJe}
+                                            onClick={() => handleCancelReconAndReverseJe(r, true)}
+                                            className="px-2 py-1 bg-red-50 hover:bg-red-700 text-red-800 hover:text-white border border-red-300 rounded text-[10px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                            title="Cancel SAP Internal Reconciliation, reverse SAP JE via Service Layer, and detach scrips to select the right GRPO"
+                                          >
+                                            {submittingJe ? "Cancelling..." : "↺ Cancel Recon, Reverse JE & Detach"}
+                                          </button>
+                                        </>
                                       ) : r.JENum && !r.ReconciledInSAP ? (
-                                        /* OPTION 2: Posted = Yes & Reconciled = No -> Reconcile (Amber/Orange) */
-                                        <button
-                                          type="button"
-                                          disabled={submittingJe}
-                                          onClick={() => handleReconcileExistingJe(r)}
-                                          className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
-                                          title="JE is already posted in SAP. Click to reconcile JE with linked A/P Invoice(s) on G/L 370001"
-                                        >
-                                          {submittingJe ? "Reconciling..." : "Reconcile"}
-                                        </button>
+                                        /* OPTION 2: Posted = Yes & Reconciled = No -> Reconcile (Amber/Orange) + Reverse JE & Detach */
+                                        <>
+                                          <button
+                                            type="button"
+                                            disabled={submittingJe}
+                                            onClick={() => handleReconcileExistingJe(r)}
+                                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10.5px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                            title="JE is already posted in SAP. Click to reconcile JE with linked A/P Invoice(s) on G/L 370001"
+                                          >
+                                            {submittingJe ? "Reconciling..." : "Reconcile"}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={submittingJe}
+                                            onClick={() => handleCancelReconAndReverseJe(r, true)}
+                                            className="px-2 py-1 bg-red-50 hover:bg-red-700 text-red-800 hover:text-white border border-red-300 rounded text-[10px] font-bold uppercase tracking-wider cursor-pointer transition-colors whitespace-nowrap"
+                                            title="Reverse SAP JE via Service Layer and detach scrips to select the right GRPO"
+                                          >
+                                            {submittingJe ? "Cancelling..." : "↺ Reverse JE & Detach"}
+                                          </button>
+                                        </>
                                       ) : (
                                         /* OPTION 1: Posted = No & Reconciled = No -> Post JE and Reconcile (Emerald Green) + Detach All */
                                         <>

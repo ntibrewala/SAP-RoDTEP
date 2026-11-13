@@ -471,6 +471,8 @@ router.get("/scrips", async (req, res) => {
         LEFT JOIN "OJDT" j0 ON j0."TransId" = j1."TransId"
         LEFT JOIN "OPCH" p0 ON j1."TransType" = '18' AND p0."TransId" = j1."TransId"
         WHERE j1."Account" = '370001'
+          AND COALESCE(j0."StornoToTr", 0) = 0
+          AND NOT EXISTS (SELECT 1 FROM "OJDT" jx WHERE jx."StornoToTr" = j1."TransId")
         ORDER BY j1."RefDate" ASC, j1."TransId" ASC
       `);
       const allJdt = jRows || [];
@@ -1452,6 +1454,8 @@ router.post("/post-grpo-je", async (req, res) => {
            LEFT JOIN "OJDT" j0 ON j0."TransId" = j1."TransId"
            WHERE j1."Account" = '370001'
              AND j1."TransType" = '30'
+             AND COALESCE(j0."StornoToTr", 0) = 0
+             AND NOT EXISTS (SELECT 1 FROM "OJDT" jx WHERE jx."StornoToTr" = j1."TransId")
              AND (
                (? <> '' AND (j1."Ref1" = ? OR j0."Ref1" = ? OR j1."LineMemo" LIKE '%' || ? || '%' OR j0."Memo" LIKE '%' || ? || '%'))
                OR (? <> '' AND (j1."Ref1" = ? OR j0."Ref1" = ? OR j1."LineMemo" LIKE '%' || ? || '%' OR j0."Memo" LIKE '%' || ? || '%'))
@@ -1592,6 +1596,136 @@ router.post("/post-grpo-je", async (req, res) => {
     });
   } catch (err) {
     console.error("[RoDTEP] POST /post-grpo-je error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// --- 11. POST /api/rodtep/cancel-grpo-je-and-detach: Cancel SAP Internal Reconciliation, Cancel JE via Service Layer & Detach Scrips ---
+router.post("/cancel-grpo-je-and-detach", async (req, res) => {
+  try {
+    const {
+      grpoDocEntry = null,
+      grpoDocNum = null,
+      blNo = "",
+      jeNum = null,
+      jeTransId = null,
+      detachScrips = true
+    } = req.body;
+
+    // 1. Resolve exact TransId in OJDT
+    let resolvedTransId = jeTransId ? Number(jeTransId) : null;
+    let resolvedJdtNum = jeNum || null;
+
+    const [jeRows] = await db.query(
+      `SELECT TOP 1 j0."TransId", j0."Number", COALESCE(j0."StornoToTr", 0) AS "StornoToTr"
+       FROM "OJDT" j0
+       WHERE (j0."TransId" = ? OR j0."Number" = ?)
+       ORDER BY j0."TransId" DESC`,
+      [Number(jeTransId || jeNum || 0), Number(jeNum || jeTransId || 0)]
+    );
+
+    if (jeRows && jeRows.length > 0) {
+      resolvedTransId = Number(jeRows[0].TransId);
+      resolvedJdtNum = jeRows[0].Number;
+    }
+
+    const cancelledReconNums = [];
+    let jeCancelled = false;
+
+    if (resolvedTransId) {
+      // 2. Find any active Internal Reconciliations (OITR/ITR1) for this JE TransId and cancel them via SAP Service Layer
+      const [activeRecons] = await db.query(
+        `SELECT DISTINCT r0."ReconNum"
+         FROM "OITR" r0
+         INNER JOIN "ITR1" r1 ON r0."ReconNum" = r1."ReconNum"
+         WHERE r1."TransId" = ? AND r0."Canceled" = 'N'
+         ORDER BY r0."ReconNum" DESC`,
+        [resolvedTransId]
+      );
+
+      for (const rRow of activeRecons || []) {
+        const rNum = Number(rRow.ReconNum);
+        await serviceLayer.post("/InternalReconciliationsService_Cancel", {
+          InternalReconciliationParams: {
+            ReconNum: rNum
+          }
+        });
+        cancelledReconNums.push(rNum);
+      }
+
+      // 3. Cancel / Reverse the Journal Entry via SAP Service Layer (if not already reversed)
+      const [alreadyStorno] = await db.query(
+        `SELECT TOP 1 "TransId" FROM "OJDT" WHERE "StornoToTr" = ?`,
+        [resolvedTransId]
+      );
+
+      if (!alreadyStorno || alreadyStorno.length === 0) {
+        await serviceLayer.post(`/JournalEntries(${resolvedTransId})/Cancel`, {});
+        jeCancelled = true;
+      } else {
+        jeCancelled = true;
+      }
+    }
+
+    // 4. Delete or reset the wrong GRPO/BL rows in BHV_RODTEP_BL & local store so scrip balances are restored on-the-fly
+    const canUseHana = await ensureHanaTables();
+    if (detachScrips) {
+      if (canUseHana) {
+        try {
+          if (grpoDocEntry) {
+            await db.execute(`DELETE FROM "BHV_RODTEP_BL" WHERE "GRPODocEntry" = ?`, [Number(grpoDocEntry)]);
+          } else if (grpoDocNum) {
+            await db.execute(`DELETE FROM "BHV_RODTEP_BL" WHERE "GRPODocNum" = ?`, [Number(grpoDocNum)]);
+          } else if (blNo) {
+            await db.execute(`DELETE FROM "BHV_RODTEP_BL" WHERE "BLNo" = ?`, [String(blNo).trim()]);
+          }
+        } catch (_) {}
+      }
+
+      const local = readLocalStore();
+      local.utilizations = (local.utilizations || []).filter((u) => {
+        if (grpoDocEntry && Number(u.GRPODocEntry) === Number(grpoDocEntry)) return false;
+        if (grpoDocNum && Number(u.GRPODocNum) === Number(grpoDocNum)) return false;
+        if (!grpoDocEntry && !grpoDocNum && blNo && String(u.BLNo || "").trim().toUpperCase() === String(blNo).trim().toUpperCase()) {
+          return false;
+        }
+        return true;
+      });
+      writeLocalStore(local);
+    } else {
+      if (canUseHana) {
+        try {
+          if (grpoDocEntry) {
+            await db.execute(`UPDATE "BHV_RODTEP_BL" SET "Remarks" = '' WHERE "GRPODocEntry" = ?`, [Number(grpoDocEntry)]);
+          } else if (blNo) {
+            await db.execute(`UPDATE "BHV_RODTEP_BL" SET "Remarks" = '' WHERE "BLNo" = ?`, [String(blNo).trim()]);
+          }
+        } catch (_) {}
+      }
+      const local = readLocalStore();
+      local.utilizations = (local.utilizations || []).map((u) => {
+        const matchGrpo = grpoDocEntry && Number(u.GRPODocEntry) === Number(grpoDocEntry);
+        const matchBl = !grpoDocEntry && blNo && String(u.BLNo || "").trim().toUpperCase() === String(blNo).trim().toUpperCase();
+        if (matchGrpo || matchBl) {
+          return { ...u, JENum: null, JETransId: null, ReconciledInSAP: false, Remarks: "" };
+        }
+        return u;
+      });
+      writeLocalStore(local);
+    }
+
+    res.json({
+      success: true,
+      resolvedTransId,
+      resolvedJdtNum,
+      cancelledReconNums,
+      jeCancelled,
+      detached: detachScrips,
+      message: `Cancelled SAP Internal Reconciliation ${cancelledReconNums.length > 0 ? "#" + cancelledReconNums.join(", #") : ""}, reversed SAP JE #${resolvedJdtNum || resolvedTransId}${detachScrips ? ", and detached scrips (balance restored)!" : "!"}`
+    });
+  } catch (err) {
+    console.error("[RoDTEP] POST /cancel-grpo-je-and-detach error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
