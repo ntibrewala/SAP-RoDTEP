@@ -1,0 +1,15 @@
+{
+  "name": "rodtep-scrip-backend",
+  "version": "1.0.0",
+  "description": "RoDTEP / RoSCTL Scrip Management & SAP B1 Service Layer Backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@sap/hana-client": "^2.27.24",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.2",
+    "express": "^5.2.1"
+  }
+}
