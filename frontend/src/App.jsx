@@ -86,55 +86,140 @@ function parseClipboardScrips(rawText, defaultPort = "Mundra") {
     .filter(Boolean);
 
   const parsedRows = [];
+  let headerMap = null; // { exporter, licNo, licDate, scheme, portCode, amount, portLoc }
+
+  const isDateToken = (v) =>
+    /^\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}$/.test(v) ||
+    /^\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}$/.test(v);
+  const isLicNoToken = (v) => /^\d{8,12}$/.test(v.replace(/\s+/g, ""));
+  const isSchemeToken = (v) => /^(RODTEP|ROSCTL|ROSTL|SEIS|MEIS|DEPB)$/i.test(v);
+  const isPortCodeToken = (v) => /^IN[A-Z0-9]{4}$/i.test(v);
+  const isPortLocToken = (v) => /^(CHENNAI|MUNDRA|MAA|MUN)$/i.test(v);
 
   for (const line of lines) {
-    // Support both Excel Tab-separated (TSV) and Comma-separated (CSV)
     const delimiter = line.includes("\t") ? "\t" : ",";
     const cols = line.split(delimiter).map((c) => c.trim());
-
     if (cols.length < 2) continue;
 
-    const firstUpper = (cols[0] || "").toUpperCase();
-    const secondUpper = (cols[1] || "").toUpperCase();
-
-    // Skip header row
+    const joinedUpper = cols.join(" ").toUpperCase();
+    // Detect Header Row and build dynamic column index map
     if (
-      firstUpper.includes("EXPORTER") ||
-      secondUpper.includes("LIC NO") ||
-      secondUpper.includes("LICENCE")
+      joinedUpper.includes("EXPORTER") ||
+      joinedUpper.includes("LIC NO") ||
+      joinedUpper.includes("LICENCE") ||
+      joinedUpper.includes("SCRIP NO") ||
+      joinedUpper.includes("SCRIP AMOUNT")
     ) {
+      headerMap = {};
+      cols.forEach((colName, idx) => {
+        const u = colName.toUpperCase();
+        if (u.includes("EXPORT") || u.includes("PARTY") || u.includes("SELLER") || u.includes("NAME")) {
+          if (headerMap.exporter === undefined) headerMap.exporter = idx;
+        } else if (u.includes("LIC") || u.includes("SCRIP NO") || u.includes("SCRIPT NO") || u.includes("CERT")) {
+          if (headerMap.licNo === undefined) headerMap.licNo = idx;
+        } else if (u.includes("DATE") || u.includes("DT")) {
+          if (headerMap.licDate === undefined) headerMap.licDate = idx;
+        } else if (u.includes("SCHEME") || u.includes("TYPE")) {
+          if (headerMap.scheme === undefined) headerMap.scheme = idx;
+        } else if (u.includes("PORT CODE") || u.includes("EDI") || u.includes("CUSTOM")) {
+          if (headerMap.portCode === undefined) headerMap.portCode = idx;
+        } else if (u.includes("AMOUNT") || u.includes("VALUE") || u.includes("DUTY") || u.includes("CREDIT") || u.includes("INR")) {
+          if (headerMap.amount === undefined) headerMap.amount = idx;
+        } else if (u === "PORT" || u.includes("LOCATION") || u.includes("LOC")) {
+          if (headerMap.portLoc === undefined) headerMap.portLoc = idx;
+        }
+      });
       continue;
     }
 
-    const exporter = cols[0] || "";
-    const licNo = cols[1] || "";
-    const licDate = cols[2] || "";
-    const scheme = (cols[3] || "RODTEP").toUpperCase();
-    const portCode = (cols[4] || "").toUpperCase();
-    const rawAmt = (cols[5] || "").replace(/,/g, "").trim();
-    const rawPortLoc = cols[6] || "";
+    let exporter = "";
+    let licNo = "";
+    let licDate = "";
+    let scheme = "";
+    let portCode = "";
+    let amount = 0;
+    let rawPortLoc = "";
 
-    // Skip summary/total rows where LIC NO is empty (e.g. ",,,,,2551794,")
-    if (!licNo) continue;
+    // 1. If a Header Row was detected and matches columns, extract via headerMap first
+    if (headerMap && Object.keys(headerMap).length >= 2) {
+      if (headerMap.exporter !== undefined) exporter = cols[headerMap.exporter] || "";
+      if (headerMap.licNo !== undefined) licNo = cols[headerMap.licNo] || "";
+      if (headerMap.licDate !== undefined) licDate = cols[headerMap.licDate] || "";
+      if (headerMap.scheme !== undefined) scheme = (cols[headerMap.scheme] || "").toUpperCase();
+      if (headerMap.portCode !== undefined) portCode = (cols[headerMap.portCode] || "").toUpperCase();
+      if (headerMap.amount !== undefined) {
+        const rawA = (cols[headerMap.amount] || "").replace(/[₹,\s]/g, "");
+        if (!isNaN(Number(rawA))) amount = Number(rawA);
+      }
+      if (headerMap.portLoc !== undefined) rawPortLoc = cols[headerMap.portLoc] || "";
+    }
 
-    const amount = Number(rawAmt);
-    if (isNaN(amount) || amount <= 0) continue;
+    // 2. Smart Pattern-Based Auto-Detection (handles any column order, missing headers, or extra Sr.No columns)
+    if (!licNo || amount <= 0) {
+      const usedIndices = new Set();
+
+      // Pass A: Find LicNo (8-12 digit number), Date, Scheme, PortCode, PortLocation
+      cols.forEach((cell, i) => {
+        if (!cell) return;
+        const clean = cell.trim();
+        if (!licDate && isDateToken(clean)) {
+          licDate = clean;
+          usedIndices.add(i);
+        } else if (!scheme && isSchemeToken(clean)) {
+          scheme = clean.toUpperCase() === "ROSTL" ? "ROSCTL" : clean.toUpperCase();
+          usedIndices.add(i);
+        } else if (!portCode && isPortCodeToken(clean)) {
+          portCode = clean.toUpperCase();
+          usedIndices.add(i);
+        } else if (!rawPortLoc && isPortLocToken(clean)) {
+          rawPortLoc = clean;
+          usedIndices.add(i);
+        } else if (!licNo && isLicNoToken(clean)) {
+          licNo = clean.replace(/\s+/g, "");
+          usedIndices.add(i);
+        }
+      });
+
+      // Pass B: Find Amount (numeric value > 0, ignoring small Sr.No in col 0) and Exporter (text)
+      cols.forEach((cell, i) => {
+        if (usedIndices.has(i) || !cell) return;
+        const clean = cell.trim();
+        const numCandidate = clean.replace(/[₹,\s]/g, "");
+        if (/^-?\d+(\.\d+)?$/.test(numCandidate)) {
+          const val = Number(numCandidate);
+          // Ignore serial numbers (e.g. 1..200 in first column when other columns exist)
+          if (i === 0 && val >= 1 && val <= 500 && cols.length >= 4) {
+            return;
+          }
+          if (amount <= 0 && val > 0) {
+            amount = val;
+            usedIndices.add(i);
+          }
+        } else if (!exporter && /[A-Za-z]{2,}/.test(clean)) {
+          exporter = clean;
+          usedIndices.add(i);
+        }
+      });
+    }
+
+    // Skip summary/total rows where LIC NO is still empty (e.g. ",,,,,2551794,")
+    if (!licNo || isNaN(amount) || amount <= 0) continue;
 
     let portLocation = defaultPort;
-    const upperLoc = rawPortLoc.toUpperCase();
-    if (upperLoc.includes("CHENNAI")) {
+    const upperLoc = (rawPortLoc || "").toUpperCase();
+    if (upperLoc.includes("CHENNAI") || upperLoc === "MAA") {
       portLocation = "Chennai";
-    } else if (upperLoc.includes("MUNDRA")) {
+    } else if (upperLoc.includes("MUNDRA") || upperLoc === "MUN") {
       portLocation = "Mundra";
     } else if (rawPortLoc) {
       portLocation = rawPortLoc;
     }
 
     parsedRows.push({
-      ExporterName: exporter,
+      ExporterName: exporter || "—",
       LicNo: licNo,
       LicDate: licDate,
-      Scheme: scheme,
+      Scheme: scheme || "RODTEP",
       PortCode: portCode,
       ScripAmount: amount,
       PortLocation: portLocation
