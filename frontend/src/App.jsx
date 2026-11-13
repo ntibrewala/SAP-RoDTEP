@@ -1,6 +1,42 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 
+let resolvedApiBase = null;
+async function apiRequest(method, endpoint, data = undefined) {
+  const host = typeof window !== "undefined" && window.location.hostname ? window.location.hostname : "10.10.0.15";
+  const inRodSubpath = typeof window !== "undefined" && window.location.pathname.toLowerCase().startsWith("/rod");
+  const candidates = resolvedApiBase
+    ? [resolvedApiBase]
+    : [
+        inRodSubpath ? "/rod/api/rodtep" : "/api/rodtep",
+        `http://${host}:5065/api/rodtep`,
+        "http://10.10.0.15:5065/api/rodtep"
+      ];
+
+  let lastErr = null;
+  for (const base of candidates) {
+    try {
+      const res = await axios({
+        method,
+        url: `${base}${endpoint}`,
+        data,
+        headers: { Accept: "application/json" }
+      });
+      if (typeof res.data === "string" && res.data.trim().startsWith("<")) {
+        throw new Error("Received HTML instead of JSON from proxy");
+      }
+      resolvedApiBase = base;
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (err.response && err.response.status === 400) {
+        throw err;
+      }
+    }
+  }
+  throw lastErr;
+}
+
 const SAMPLE_EXCEL_TSV = `EXPORTER,LIC NO,DATED,SCHEME,PORT CODE,  SCRIP AMOUNT  ,
 THE PARADISE LINEN,2610023656,22.10.2026,ROSCTL,INMAA1,298820,Chennai
 STR GARMENTS,2611005776,05.11.2026,ROSCTL,INTUT6,291326,Chennai
@@ -152,10 +188,10 @@ export default function App() {
     setLoading(true);
     try {
       const [vRes, apRes, grpoRes, scripRes] = await Promise.all([
-        axios.get("/api/rodtep/vendors"),
-        axios.get("/api/rodtep/ap-invoices"),
-        axios.get("/api/rodtep/grpo-bl-list"),
-        axios.get("/api/rodtep/scrips")
+        apiRequest("GET", "/vendors"),
+        apiRequest("GET", "/ap-invoices"),
+        apiRequest("GET", "/grpo-bl-list"),
+        apiRequest("GET", "/scrips")
       ]);
       setVendors(vRes.data || []);
       setApInvoices(apRes.data || []);
@@ -305,7 +341,7 @@ export default function App() {
         scrips: pastedScrips
       };
 
-      const res = await axios.post("/api/rodtep/create-ap-and-scrips", payload);
+      const res = await apiRequest("POST", "/create-ap-and-scrips", payload);
       const data = res.data;
 
       setBanner({
@@ -545,7 +581,7 @@ export default function App() {
         allocations
       };
 
-      const res = await axios.post("/api/rodtep/allocate-bl", payload);
+      const res = await apiRequest("POST", "/allocate-bl", payload);
       setBanner({
         type: "success",
         text: `Attached ${res.data.count} RoDTEP scrip(s) totaling ₹${formatINR(res.data.totalAllocated)} to BL ${res.data.blNo}${res.data.grpoDocNum ? ` (GRPO #${res.data.grpoDocNum})` : ""} for Port ${res.data.portLocation}!`
@@ -565,7 +601,7 @@ export default function App() {
 
   const handleDeleteUtilization = async (id) => {
     try {
-      await axios.delete(`/api/rodtep/utilization/${id}`);
+      await apiRequest("DELETE", `/utilization/${id}`);
       await fetchAllData();
       setBanner({
         type: "info",
