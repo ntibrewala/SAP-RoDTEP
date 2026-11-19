@@ -1,9 +1,15 @@
 $ErrorActionPreference = "Continue"
 
-Write-Host "1. Stopping existing RoDTEP backend..." -ForegroundColor Cyan
+Write-Host "1. Stopping existing RoDTEP backend on port 5065..." -ForegroundColor Cyan
 Stop-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -ErrorAction SilentlyContinue
-Get-NetTCPConnection -LocalPort 5065 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 1
+schtasks /End /TN "SAP-RoDTEP-Backend" 2>$null | Out-Null
+Get-NetTCPConnection -LocalPort 5065 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
+    if ($_ -and $_ -gt 0) {
+        Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+        taskkill /F /PID $_ /T 2>$null | Out-Null
+    }
+}
+Start-Sleep -Seconds 2
 
 Write-Host "2. Setting up D:\BHV\rod\backend and D:\BHV\rod\frontend..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path "D:\BHV\rod\backend" | Out-Null
@@ -43,11 +49,30 @@ if (-not (Test-Path "D:\BHV\rod\backend\node_modules")) {
 
 Write-Host "3. Starting SAP-RoDTEP-Backend from D:\BHV\rod\backend..." -ForegroundColor Cyan
 $nodePath = (Get-Command node).Source
-$action = New-ScheduledTaskAction -Execute $nodePath -Argument "server.js" -WorkingDirectory "D:\BHV\rod\backend"
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -Action $action -Trigger $trigger -Settings $settings -User "SYSTEM" -RunLevel Highest -Force | Out-Null
-Start-ScheduledTask -TaskName "SAP-RoDTEP-Backend"
+try {
+    $action = New-ScheduledTaskAction -Execute $nodePath -Argument "server.js" -WorkingDirectory "D:\BHV\rod\backend"
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -Action $action -Trigger $trigger -Settings $settings -User "SYSTEM" -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null
+    Start-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -ErrorAction SilentlyContinue
+} catch {}
 
 Start-Sleep -Seconds 2
-Write-Host "DONE! Both Frontend (D:\BHV\rod\frontend) and Backend (D:\BHV\rod\backend) are running from D:\BHV\rod!" -ForegroundColor Green
+
+# Verify port 5065 is listening; if Scheduled Task did not start (e.g. non-Admin PowerShell), launch node.exe directly in background
+$listening = Get-NetTCPConnection -LocalPort 5065 -State Listen -ErrorAction SilentlyContinue
+if (-not $listening) {
+    Write-Host "Starting node.js backend process directly on port 5065 from D:\BHV\rod\backend..." -ForegroundColor Yellow
+    Start-Process -FilePath $nodePath -ArgumentList "server.js" -WorkingDirectory "D:\BHV\rod\backend" -WindowStyle Hidden
+    Start-Sleep -Seconds 2
+}
+
+$listeningAfter = Get-NetTCPConnection -LocalPort 5065 -State Listen -ErrorAction SilentlyContinue
+if ($listeningAfter) {
+    Write-Host "SUCCESS! Backend is actively listening on Port 5065 (PID: $($listeningAfter[0].OwningProcess)) and Frontend is deployed to D:\BHV\rod\frontend!" -ForegroundColor Green
+} else {
+    Write-Host "WARNING: Port 5065 is still not listening. Running node server.js to check for startup errors:" -ForegroundColor Red
+    Push-Location "D:\BHV\rod\backend"
+    node server.js
+    Pop-Location
+}
