@@ -1,8 +1,45 @@
 $ErrorActionPreference = "Continue"
 
-Write-Host "1. Stopping existing RoDTEP backend on port 5065..." -ForegroundColor Cyan
+Write-Host "1. Locating or installing NSSM (Windows Service Manager)..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path "D:\BHV\rod\backend" | Out-Null
+New-Item -ItemType Directory -Force -Path "D:\BHV\rod\frontend" | Out-Null
+
+$nssmCandidates = @(
+    (Get-Command nssm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+    "D:\BHV\rod\nssm.exe",
+    "D:\BHV\nssm.exe",
+    "C:\nssm\nssm.exe",
+    "C:\nssm\win64\nssm.exe",
+    "C:\Windows\System32\nssm.exe",
+    "C:\ProgramData\chocolatey\bin\nssm.exe"
+) | Where-Object { $_ -and (Test-Path $_) }
+
+$nssmPath = $nssmCandidates | Select-Object -First 1
+
+if (-not $nssmPath) {
+    Write-Host "Downloading nssm.exe to D:\BHV\rod\nssm.exe..." -ForegroundColor Yellow
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $zipPath = "D:\BHV\rod\nssm.zip"
+        $extractDir = "D:\BHV\rod\nssm_tmp"
+        Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+        $foundExe = Get-ChildItem -Path $extractDir -Filter "nssm.exe" -Recurse | Where-Object { $_.FullName -like "*win64*" } | Select-Object -First 1
+        if ($foundExe) {
+            Copy-Item -Path $foundExe.FullName -Destination "D:\BHV\rod\nssm.exe" -Force
+            $nssmPath = "D:\BHV\rod\nssm.exe"
+        }
+        Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "Note: Could not auto-download nssm.cc ($($_.Exception.Message))." -ForegroundColor Yellow
+    }
+}
+
+Write-Host "2. Stopping existing RoDTEP backend on port 5065..." -ForegroundColor Cyan
+Stop-Service -Name "SAP-RoDTEP-Backend" -Force -ErrorAction SilentlyContinue
 Stop-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -ErrorAction SilentlyContinue
-schtasks /End /TN "SAP-RoDTEP-Backend" 2>$null | Out-Null
+Unregister-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -Confirm:$false -ErrorAction SilentlyContinue
 Get-NetTCPConnection -LocalPort 5065 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
     if ($_ -and $_ -gt 0) {
         Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
@@ -11,10 +48,7 @@ Get-NetTCPConnection -LocalPort 5065 -ErrorAction SilentlyContinue | Select-Obje
 }
 Start-Sleep -Seconds 2
 
-Write-Host "2. Setting up D:\BHV\rod\backend and D:\BHV\rod\frontend..." -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path "D:\BHV\rod\backend" | Out-Null
-New-Item -ItemType Directory -Force -Path "D:\BHV\rod\frontend" | Out-Null
-
+Write-Host "3. Deploying Backend and Frontend to D:\BHV\rod..." -ForegroundColor Cyan
 if (Test-Path "D:\BHV\rodtep\backend\node_modules") {
     if (-not (Test-Path "D:\BHV\rod\backend\node_modules")) {
         Write-Host "Copying node_modules from D:\BHV\rodtep\backend..." -ForegroundColor Yellow
@@ -53,20 +87,27 @@ if (-not (Test-Path "D:\BHV\rod\backend\node_modules")) {
     Pop-Location
 }
 
-Write-Host "3. Starting SAP-RoDTEP-Backend from D:\BHV\rod\backend..." -ForegroundColor Cyan
 $nodePath = (Get-Command node).Source
-try {
-    $action = New-ScheduledTaskAction -Execute $nodePath -Argument "server.js" -WorkingDirectory "D:\BHV\rod\backend"
-    $trigger1 = New-ScheduledTaskTrigger -AtStartup
-    $trigger2 = New-ScheduledTaskTrigger -AtLogOn
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -Action $action -Trigger @($trigger1, $trigger2) -Settings $settings -User "SYSTEM" -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null
-    Start-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -ErrorAction SilentlyContinue
-} catch {}
+
+if ($nssmPath -and (Test-Path $nssmPath)) {
+    Write-Host "4. Configuring & Starting SAP-RoDTEP-Backend Windows Service via NSSM ($nssmPath)..." -ForegroundColor Cyan
+    & $nssmPath install "SAP-RoDTEP-Backend" $nodePath "server.js" 2>$null | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" Application $nodePath | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" AppParameters "server.js" | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" AppDirectory "D:\BHV\rod\backend" | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" DisplayName "SAP RoDTEP Scrip Backend (Port 5065)" | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" Description "Node.js SAP HANA & Service Layer Backend for RoDTEP/RoSCTL Scrip Management (D:\BHV\rod\backend)" | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" Start SERVICE_AUTO_START | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" AppStdout "D:\BHV\rod\backend\service.log" | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" AppStderr "D:\BHV\rod\backend\service-error.log" | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" AppRotateFiles 1 | Out-Null
+    & $nssmPath set "SAP-RoDTEP-Backend" AppExit Default Restart | Out-Null
+    & $nssmPath start "SAP-RoDTEP-Backend" 2>$null | Out-Null
+    Start-Service -Name "SAP-RoDTEP-Backend" -ErrorAction SilentlyContinue
+}
 
 Start-Sleep -Seconds 2
 
-# Verify port 5065 is listening; if Scheduled Task did not start (e.g. non-Admin PowerShell), launch node.exe directly in background
 $listening = Get-NetTCPConnection -LocalPort 5065 -State Listen -ErrorAction SilentlyContinue
 if (-not $listening) {
     Write-Host "Starting node.js backend process directly on port 5065 from D:\BHV\rod\backend..." -ForegroundColor Yellow
@@ -76,10 +117,9 @@ if (-not $listening) {
 
 $listeningAfter = Get-NetTCPConnection -LocalPort 5065 -State Listen -ErrorAction SilentlyContinue
 if ($listeningAfter) {
-    Write-Host "SUCCESS! Backend is actively listening on Port 5065 (PID: $($listeningAfter[0].OwningProcess)) and Frontend is deployed to D:\BHV\rod\frontend!" -ForegroundColor Green
+    $svc = Get-Service -Name "SAP-RoDTEP-Backend" -ErrorAction SilentlyContinue
+    $svcStatus = if ($svc) { "Windows Service Status: $($svc.Status)" } else { "Direct Process" }
+    Write-Host "SUCCESS! SAP-RoDTEP-Backend is listening on Port 5065 (PID: $($listeningAfter[0].OwningProcess) | $svcStatus)" -ForegroundColor Green
 } else {
-    Write-Host "WARNING: Port 5065 is still not listening. Running node server.js to check for startup errors:" -ForegroundColor Red
-    Push-Location "D:\BHV\rod\backend"
-    node server.js
-    Pop-Location
+    Write-Host "WARNING: Port 5065 is still not listening. Check D:\BHV\rod\backend\service-error.log" -ForegroundColor Red
 }
