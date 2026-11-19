@@ -192,7 +192,7 @@ router.get("/vendors", async (req, res) => {
   }
 });
 
-// --- 2. GET /api/rodtep/ap-invoices: Fetch Recent RoDTEP AP Invoices (Account 370001) ---
+// --- 2. GET /api/rodtep/ap-invoices: Fetch Recent RoDTEP AP Invoices & Drafts (Account 370001) ---
 router.get("/ap-invoices", async (req, res) => {
   try {
     const sql = `
@@ -200,6 +200,8 @@ router.get("/ap-invoices", async (req, res) => {
         p0."DocEntry",
         p0."DocNum",
         p0."TransId",
+        p0."draftKey" AS "DraftKey",
+        0 AS "IsDraft",
         TO_VARCHAR(p0."DocDate", 'YYYY-MM-DD') AS "DocDate",
         TO_VARCHAR(p0."DocDueDate", 'YYYY-MM-DD') AS "DocDueDate",
         p0."CardCode",
@@ -217,8 +219,47 @@ router.get("/ap-invoices", async (req, res) => {
       WHERE p0."CANCELED" = 'N'
       ORDER BY CASE WHEN COALESCE(j1."BalDueDeb" - j1."BalDueCred", 0) > 0 THEN 0 ELSE 1 END ASC, p0."DocEntry" DESC
     `;
-    const [rows] = await db.query(sql);
-    res.json(rows || []);
+    const [postedRows] = await db.query(sql);
+
+    let draftRows = [];
+    try {
+      const draftSql = `
+        SELECT TOP 25
+          d0."DocEntry",
+          d0."DocNum",
+          NULL AS "TransId",
+          d0."DocEntry" AS "DraftKey",
+          1 AS "IsDraft",
+          TO_VARCHAR(d0."DocDate", 'YYYY-MM-DD') AS "DocDate",
+          TO_VARCHAR(d0."DocDueDate", 'YYYY-MM-DD') AS "DocDueDate",
+          d0."CardCode",
+          d0."CardName",
+          d0."NumAtCard",
+          CAST(d0."DocTotal" AS DOUBLE) AS "DocTotal",
+          CAST(d1."LineTotal" AS DOUBLE) AS "ScripFaceValue",
+          CAST(COALESCE(d2."LineTotal", 0) AS DOUBLE) AS "GainDiscountAmount",
+          CAST(d1."LineTotal" AS DOUBLE) AS "InternalReconPending",
+          0 AS "ReconciledAmount"
+        FROM "ODRF" d0
+        INNER JOIN "DRF1" d1 ON d0."DocEntry" = d1."DocEntry" AND d1."AcctCode" = '370001'
+        LEFT JOIN "DRF1" d2 ON d0."DocEntry" = d2."DocEntry" AND d2."AcctCode" = '410023'
+        WHERE d0."ObjType" = '18'
+          AND d0."CANCELED" = 'N'
+          AND d0."DocStatus" = 'O'
+          AND NOT EXISTS (
+            SELECT 1 FROM "OPCH" px
+            WHERE px."CANCELED" = 'N'
+              AND (px."draftKey" = d0."DocEntry" OR (d0."NumAtCard" IS NOT NULL AND d0."NumAtCard" <> '' AND px."NumAtCard" = d0."NumAtCard" AND px."CardCode" = d0."CardCode"))
+          )
+        ORDER BY d0."DocEntry" DESC
+      `;
+      const [dRows] = await db.query(draftSql);
+      draftRows = dRows || [];
+    } catch (dErr) {
+      console.warn("[RoDTEP] GET /ap-invoices draft query note:", dErr.message);
+    }
+
+    res.json([...(draftRows || []), ...(postedRows || [])]);
   } catch (err) {
     console.error("[RoDTEP] GET /ap-invoices error:", err.message);
     res.status(500).json({ error: err.message });
@@ -323,6 +364,28 @@ router.get("/scrips", async (req, res) => {
 
     if (canUseHanaTables) {
       try {
+        // Auto-upgrade any scrips saved against a Draft AP Invoice once the Draft is posted to OPCH in SAP
+        try {
+          const [matchedPostedAps] = await db.query(`
+            SELECT DISTINCT s."LicNo", p0."DocEntry" AS "FinalDocEntry", p0."DocNum" AS "FinalDocNum"
+            FROM "BHV_RODTEP_SCRIP" s
+            INNER JOIN "OPCH" p0
+              ON p0."CANCELED" = 'N'
+              AND (
+                (s."APDocEntry" IS NOT NULL AND p0."draftKey" = s."APDocEntry")
+                OR (s."NumAtCard" IS NOT NULL AND s."NumAtCard" <> '' AND p0."NumAtCard" = s."NumAtCard" AND p0."CardCode" = s."CardCode")
+              )
+            INNER JOIN "PCH1" p1 ON p0."DocEntry" = p1."DocEntry" AND p1."AcctCode" = '370001'
+            WHERE s."APDocEntry" IS NULL OR s."APDocEntry" <> p0."DocEntry" OR s."APDocNum" <> p0."DocNum"
+          `);
+          for (const mRow of matchedPostedAps || []) {
+            await db.execute(
+              `UPDATE "BHV_RODTEP_SCRIP" SET "APDocEntry" = ?, "APDocNum" = ? WHERE "LicNo" = ?`,
+              [Number(mRow.FinalDocEntry), Number(mRow.FinalDocNum), String(mRow.LicNo)]
+            );
+          }
+        } catch (_) {}
+
         // ON-THE-FLY CALCULATION via SQL LEFT JOIN & SUM(u."AmountUsed")
         const onTheFlySql = `
           SELECT
@@ -476,13 +539,57 @@ router.get("/scrips", async (req, res) => {
         ORDER BY j1."RefDate" ASC, j1."TransId" ASC
       `);
       const allJdt = jRows || [];
-      glAllApRows = allJdt.filter(
-        (r) => String(r.TransType) === "18" && Number(r.OriginalDebit) > 0 && r.APCanceled === "N"
-      );
+      let openDraftApRows = [];
+      try {
+        const [dApRows] = await db.query(`
+          SELECT
+            'DRAFT_' || TO_VARCHAR(d0."DocEntry") AS "TransId",
+            0 AS "Line_ID",
+            '112' AS "TransType",
+            TO_VARCHAR(d0."DocNum") AS "BaseRef",
+            TO_VARCHAR(d0."DocDate", 'YYYY-MM-DD') AS "RefDate",
+            CAST(d1."LineTotal" AS DOUBLE) AS "OriginalDebit",
+            0 AS "OriginalCredit",
+            CAST(d1."LineTotal" AS DOUBLE) AS "BalDueDeb",
+            0 AS "BalDueCred",
+            CAST(d1."LineTotal" AS DOUBLE) AS "PendingReconBalance",
+            0 AS "ReconciledAmount",
+            COALESCE(d0."Comments", '') AS "LineMemo",
+            d0."DocEntry" AS "APDocEntry",
+            d0."DocNum" AS "APDocNum",
+            d0."CANCELED" AS "APCanceled",
+            d0."CardCode",
+            d0."CardName",
+            COALESCE(d0."NumAtCard", '') AS "NumAtCard",
+            1 AS "IsDraft"
+          FROM "ODRF" d0
+          INNER JOIN "DRF1" d1 ON d0."DocEntry" = d1."DocEntry" AND d1."AcctCode" = '370001'
+          WHERE d0."ObjType" = '18'
+            AND d0."CANCELED" = 'N'
+            AND d0."DocStatus" = 'O'
+            AND NOT EXISTS (
+              SELECT 1 FROM "OPCH" px
+              WHERE px."CANCELED" = 'N'
+                AND (px."draftKey" = d0."DocEntry" OR (d0."NumAtCard" IS NOT NULL AND d0."NumAtCard" <> '' AND px."NumAtCard" = d0."NumAtCard" AND px."CardCode" = d0."CardCode"))
+            )
+          ORDER BY d0."DocEntry" DESC
+        `);
+        openDraftApRows = dApRows || [];
+      } catch (_) {}
+
+      glAllApRows = [
+        ...openDraftApRows,
+        ...allJdt.filter(
+          (r) => String(r.TransType) === "18" && Number(r.OriginalDebit) > 0 && r.APCanceled === "N"
+        )
+      ];
       glAllBoeCreditRows = allJdt.filter((r) => Number(r.OriginalCredit) > 0 && String(r.TransType) !== "18");
-      glReconPendingRows = allJdt.filter(
-        (r) => String(r.TransType) === "18" && r.APCanceled === "N" && Number(r.PendingReconBalance || 0) > 0.001
-      );
+      glReconPendingRows = [
+        ...openDraftApRows,
+        ...allJdt.filter(
+          (r) => String(r.TransType) === "18" && r.APCanceled === "N" && Number(r.PendingReconBalance || 0) > 0.001
+        )
+      ];
 
       // Compute group total per GRPO/BL to also match JEs by exact BOE duty amount
       const groupTotalsByGrpoOrBl = {};
@@ -702,6 +809,7 @@ router.post("/create-ap-and-scrips", async (req, res) => {
       }
 
       const apPayload = {
+        DocObjectCode: "oPurchaseInvoices",
         Series: seriesId,
         CardCode: finalCardCode,
         DocType: "dDocument_Service",
@@ -721,16 +829,21 @@ router.post("/create-ap-and-scrips", async (req, res) => {
           ? { userName: sapUsername.trim(), password: sapPassword }
           : null;
 
-      serviceLayerResponse = await serviceLayer.post(
-        "/PurchaseInvoices",
-        apPayload,
-        {},
-        customCreds
-      );
-
-      finalDocEntry = Number(serviceLayerResponse.DocEntry);
-      finalDocNum = Number(serviceLayerResponse.DocNum || serviceLayerResponse.DocEntry);
-      finalCardName = serviceLayerResponse.CardName || finalCardName;
+      try {
+        // Post as a SAP Draft A/P Invoice (/b1s/v1/Drafts) so user can attach invoice PDF in SAP Drafts and add it
+        serviceLayerResponse = await serviceLayer.post(
+          "/Drafts",
+          apPayload,
+          {},
+          customCreds
+        );
+        finalDocEntry = Number(serviceLayerResponse.DocEntry);
+        finalDocNum = Number(serviceLayerResponse.DocNum || serviceLayerResponse.DocEntry);
+        finalCardName = serviceLayerResponse.CardName || finalCardName;
+      } catch (draftErr) {
+        console.warn("[RoDTEP] SAP Service Layer /Drafts warning (still saving scrips to BHV_RODTEP_SCRIP):", draftErr.message);
+        serviceLayerResponse = { warning: draftErr.message };
+      }
     }
 
     // Look up CardName if not provided
@@ -811,7 +924,9 @@ router.post("/create-ap-and-scrips", async (req, res) => {
       totalScripFaceValue,
       discountAmount: absDiscount,
       netInvoiceTotal,
-      scripsCount: cleanedScrips.length
+      scripsCount: cleanedScrips.length,
+      isDraft: mode === "CREATE_NEW_AP" && !!finalDocEntry,
+      sapWarning: serviceLayerResponse?.warning || null
     });
   } catch (err) {
     console.error("[RoDTEP] POST /create-ap-and-scrips error:", err.message);

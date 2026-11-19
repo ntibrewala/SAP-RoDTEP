@@ -798,10 +798,12 @@ export default function App() {
       const data = res.data;
 
       setBanner({
-        type: "success",
+        type: data.sapWarning ? "info" : "success",
         text:
           apMode === "CREATE_AP"
-            ? `Created SAP A/P Invoice #${data.apDocNum} (DocEntry: ${data.apDocEntry}) via Service Layer for ₹${formatINR(data.netInvoiceTotal)} and saved ${data.scripsCount} RoDTEP scrips!`
+            ? data.sapWarning
+              ? `Saved ${data.scripsCount} RoDTEP scrips (₹${formatINR(data.totalScripFaceValue)}) to Table 1! Note from SAP Service Layer: ${data.sapWarning}`
+              : `Created SAP Draft A/P Invoice #${data.apDocNum} (Draft DocEntry: ${data.apDocEntry}) via Service Layer for ₹${formatINR(data.netInvoiceTotal)} and saved ${data.scripsCount} linked RoDTEP scrips! Attach the Invoice PDF in SAP Drafts and post it.`
             : apMode === "SAVE_ONLY"
             ? `Saved ${data.scripsCount} Pending RoDTEP scrips (₹${formatINR(data.totalScripFaceValue)}) to Table 1! You can use them on BLs immediately and link their SAP A/P Invoice # anytime later.`
             : `Linked ${data.scripsCount} RoDTEP scrips (₹${formatINR(data.totalScripFaceValue)}) to SAP A/P Invoice #${data.apDocNum} (DocEntry: ${data.apDocEntry})!`
@@ -1884,7 +1886,7 @@ export default function App() {
                       {submittingAp
                         ? "Posting to SAP..."
                         : apMode === "CREATE_AP"
-                        ? `Create SAP A/P Invoice (₹${formatINR(pastedSummary.netPayable)}) & Save ${pastedSummary.count} Linked Scrips`
+                        ? `Create SAP Draft A/P Invoice (₹${formatINR(pastedSummary.netPayable)}) & Save ${pastedSummary.count} Linked Scrips`
                         : apMode === "SAVE_ONLY"
                         ? `Save ${pastedSummary.count} Pending Scrips (₹${formatINR(pastedSummary.total)}) — Link AP Invoice Later`
                         : `Link ${pastedSummary.count} Scrips (₹${formatINR(pastedSummary.total)}) to Selected A/P Invoice`}
@@ -1923,7 +1925,8 @@ export default function App() {
                         scrips.some(
                           (s) =>
                             (r.APDocEntry && Number(s.APDocEntry) === Number(r.APDocEntry)) ||
-                            (r.APDocNum && Number(s.APDocNum) === Number(r.APDocNum))
+                            (r.APDocNum && !r.IsDraft && Number(s.APDocNum) === Number(r.APDocNum)) ||
+                            (r.NumAtCard && s.NumAtCard && String(s.NumAtCard).trim() === String(r.NumAtCard).trim())
                         )
                       ).length
                     })
@@ -2023,7 +2026,8 @@ export default function App() {
                         const linkedList = scrips.filter(
                           (s) =>
                             (r.APDocEntry && Number(s.APDocEntry) === Number(r.APDocEntry)) ||
-                            (r.APDocNum && Number(s.APDocNum) === Number(r.APDocNum))
+                            (r.APDocNum && !r.IsDraft && Number(s.APDocNum) === Number(r.APDocNum)) ||
+                            (r.NumAtCard && s.NumAtCard && String(s.NumAtCard).trim() === String(r.NumAtCard).trim())
                         );
                         const enteredForAp = Number(
                           linkedList.reduce((sum, s) => sum + Number(s.ScripAmount || 0), 0).toFixed(2)
@@ -2041,6 +2045,11 @@ export default function App() {
                               <td className="py-2.5 px-3 font-mono-code text-[#888]">{idx + 1}</td>
                               <td className="py-2.5 px-3 font-mono-code font-bold text-[#c8102e]">
                                 #{r.APDocNum || r.BaseRef}
+                                {Number(r.IsDraft) === 1 && (
+                                  <span className="ml-1.5 px-1.5 py-0.5 bg-amber-100 text-amber-900 border border-amber-400 rounded text-[9.5px] font-extrabold uppercase">
+                                    Draft · Attach Inv in SAP
+                                  </span>
+                                )}
                               </td>
                               <td className="py-2.5 px-3 font-mono-code">{r.RefDate}</td>
                               <td className="py-2.5 px-3 font-medium">
