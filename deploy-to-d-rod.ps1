@@ -40,6 +40,12 @@ try {
     }
 } catch {}
 
+try {
+    if (-not (Get-NetFirewallRule -DisplayName "SAP-RoDTEP-Backend-5065" -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName "SAP-RoDTEP-Backend-5065" -Direction Inbound -LocalPort 5065 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
+    }
+} catch {}
+
 if (-not (Test-Path "D:\BHV\rod\backend\node_modules")) {
     Write-Host "Installing backend npm packages in D:\BHV\rod\backend..." -ForegroundColor Yellow
     Push-Location "D:\BHV\rod\backend"
@@ -51,9 +57,10 @@ Write-Host "3. Starting SAP-RoDTEP-Backend from D:\BHV\rod\backend..." -Foregrou
 $nodePath = (Get-Command node).Source
 try {
     $action = New-ScheduledTaskAction -Execute $nodePath -Argument "server.js" -WorkingDirectory "D:\BHV\rod\backend"
-    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $trigger1 = New-ScheduledTaskTrigger -AtStartup
+    $trigger2 = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -Action $action -Trigger $trigger -Settings $settings -User "SYSTEM" -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null
+    Register-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -Action $action -Trigger @($trigger1, $trigger2) -Settings $settings -User "SYSTEM" -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null
     Start-ScheduledTask -TaskName "SAP-RoDTEP-Backend" -ErrorAction SilentlyContinue
 } catch {}
 
